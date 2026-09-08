@@ -88,7 +88,9 @@ This document tracks what `look` supports today and what is planned next.
 ### Super actions
 
 - a control strip on the empty home screen (no query typed) with system toggles, one-shot actions and read-only info tiles
-- the tile set, order, sizes and mnemonics come from the shared `core/qactions` catalog, so macOS, Linux and Windows render the same strip; only the native state reads and control paths differ. On Linux the strip works across GNOME, KDE and tiling WMs including i3
+- the tile set, sizes and mnemonics come from the shared `core/qactions` catalog, so macOS, Linux and Windows render the same strip; only the native state reads and control paths differ. On Linux the strip works across GNOME, KDE and tiling WMs including i3
+- the arrangement is the user's, in `~/.look/super-actions.toml`: a drawing of the grid where each line is a row and each name a cell. Repeat a name to make a tile span, `.` for a deliberate gap, delete a name to hide that tile, up to five rows and six columns. Each role has a minimum size (`look_qactions::min_span`: L slot 2x2, weather 1x2, now playing 2x1); drawn under it the tile is dropped rather than clipped. Seeded on first run with the default layout, so the file documents itself; `rm` it to reset. Resolved once in the core, so both shells place from the same coordinates and neither works out a span for itself
+- a drawing that cannot be trusted never yields an empty strip: a bad tile is dropped and the rest renders, a structural error falls back to the whole default, and either way the reason is reported in the window and on stderr
 - tiles: L slot (Pomodoro session > remaining todos > clock), Bluetooth, Wi-Fi, Battery, Theme, Keep Awake, Screensaver, Weather, Mic, Restart, Shut Down, Now Playing
 - activation: click a tile, or press the platform modifier + its highlighted letter - `Cmd` (macOS) / `Alt` (Linux, Windows): `B` Bluetooth, `W` Wi-Fi, `T` Theme, `K` Keep Awake, `S` Screensaver, `M` Mic, `R` Restart, `D` Shut Down, `P` Now Playing play/pause
 - Restart and Shut Down arm on the first press and fire on the second; `Esc` (macOS) or the auto-disarm timeout cancels
@@ -117,6 +119,7 @@ This document tracks what `look` supports today and what is planned next.
 - `dir` rows stay real files and folders, so preview, reveal, copy, and the file verbs keep working on them
 - per-block verbs (`open`, `edit`, `terminal`, `reveal`) overriding the global preferred tools for that block's rows only
 - `then` targets reached with `Cmd+K` / `Ctrl+K`: a target that performs steps is an action, a target that produces rows is a drill-down (levels stack 5 deep, `Esc` walks back)
+- `applies` on a `do` block makes it an action on rows it did not produce: `"files"` / `"dirs"` / `"paths"` / `"apps"`, or `{ ext = [...] }` / `{ match = [...] }`, so a verb joins the `Cmd+K` menu of every matching row the index already found. Appended after the built-in verbs, capped at 10 per row, ordered by `bias`
 - placeholders in every declared command (`{id}`, `{title}`, `{path}`, `{dir}`, `{query}`, `{parent.*}`), shell-escaped on substitution, plus `LOOK_ID` / `LOOK_TITLE` / `LOOK_PATH` in the environment
 - `confirm` question before a destructive block acts; `preview` command whose output fills the right panel for the selected row
 - row wire formats: tab-separated lines (`id<TAB>title<TAB>subtitle`) or `format = "json"` for per-row `path` and `icon`

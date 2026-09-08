@@ -40,8 +40,6 @@ import {
     searchKillTargets,
     killProcess,
     getIcon,
-    copyToClipboard,
-    deleteClipboardEntry,
     isDevBuild,
     getConfig,
 } from './ipc.js';
@@ -62,10 +60,9 @@ import {
 // colon + bold-bullet format, macOS keeps its space-separated form.
 //
 // Every line here has to fit the left card footer in one row when the panes
-// float, which is the narrowest place a hint is shown. That budget is what
-// dropped "Ctrl+F: Reveal" and "Ctrl+/: Command mode" from the home hints, and
-// what keeps the clipboard hint to its first two items - all three still work
-// and are still listed in Settings > Shortcuts.
+// float, which is the narrowest place a hint is shown. That budget is three
+// items at most, matched by macOS (LauncherView.hintItemBudget); the keys left
+// out still work and are still listed in Settings > Shortcuts.
 const HINT_MAIN = 'Enter: Open \u2022 Ctrl+K: Actions \u2022 Ctrl+H: Help';
 // Inside a level the way out is the thing to say.
 const HINT_LEVEL = 'Enter: Open \u2022 Ctrl+K: Actions \u2022 Esc: Back';
@@ -74,10 +71,8 @@ const HINT_CLIPBOARD = 'Enter: Copy clip \u2022 Ctrl+D: Remove clip';
 const HINT_PROCESS = 'Enter: CPU \u2022 Ctrl+D: Kill \u2022 Ctrl+C: Copy PID';
 // Discovery-menu hints \u2014 mirror macOS prefixSuggestion / commandSuggestion
 // hint bars (LauncherView.swift hintItems).
-const HINT_PREFIX_DISCOVERY =
-    'Enter: Pick prefix \u2022 Up/Down: Move \u2022 Esc: Clear \u2022 Ctrl+H: Help';
-const HINT_COMMAND_DISCOVERY =
-    'Enter: Run command \u2022 Up/Down: Move \u2022 Esc: Clear \u2022 Ctrl+H: Help';
+const HINT_PREFIX_DISCOVERY = 'Enter: Pick prefix \u2022 Up/Down: Move \u2022 Esc: Clear';
+const HINT_COMMAND_DISCOVERY = 'Enter: Run command \u2022 Up/Down: Move \u2022 Esc: Clear';
 
 // "Ctrl+1-7: Switch", derived from the catalog so a new command can't leave the
 // hint stale (mirrors the macOS commandSwitchHint).
@@ -86,13 +81,13 @@ const SWITCH_HINT = `Ctrl+1-${COMMAND_ENTRIES.length}: Switch`;
 // Per-command hint lines while command mode is active; `shell` doubles as
 // the fallback for commands without a dedicated line.
 const COMMAND_HINTS = {
-    pomo: `Space: Start/pause \u2022 R: Reset \u2022 P: Music \u2022 Esc: Back \u2022 Tab/${SWITCH_HINT}`,
-    todo: `Ctrl+N: Switch page \u2022 Ctrl+S: Save \u2022 Tab/${SWITCH_HINT} \u2022 Esc: Back`,
-    speed: `R: Rerun \u2022 E: Show IP \u2022 Esc: Back \u2022 Tab/${SWITCH_HINT}`,
-    kill: `Y: Confirm \u2022 N: Cancel \u2022 Tab/${SWITCH_HINT} \u2022 Esc: Back`,
-    sys: `Esc: Back \u2022 Tab/${SWITCH_HINT} \u2022 Ctrl+/: Command mode \u2022 Ctrl+Shift+,: Settings`,
-    calc: `Enter: Evaluate \u2022 Tab: Select \u2022 ${SWITCH_HINT} \u2022 Esc: Back`,
-    shell: `Enter: Run \u2022 Tab: Select \u2022 ${SWITCH_HINT} \u2022 Esc: Back`,
+    pomo: 'Space: Start/pause \u2022 R: Reset \u2022 Esc: Back',
+    todo: 'Ctrl+N: Switch page \u2022 Ctrl+S: Save \u2022 Esc: Back',
+    speed: 'R: Rerun \u2022 E: Show IP \u2022 Esc: Back',
+    kill: 'Y: Confirm \u2022 N: Cancel \u2022 Esc: Back',
+    sys: `Tab/${SWITCH_HINT} \u2022 Ctrl+Shift+,: Settings \u2022 Esc: Back`,
+    calc: 'Enter: Evaluate \u2022 Tab: Select \u2022 Esc: Back',
+    shell: 'Enter: Run \u2022 Tab: Select \u2022 Esc: Back',
 };
 
 // Hint constants are static, authored in code \u2014 safe to set as innerHTML so
@@ -317,6 +312,21 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         },
     });
+    function syncSearchSurface() {
+        const translating = search.isTranslateMode();
+        resultsList.hidden = translating;
+        runningApps.setSuspended(translating);
+
+        if (translating) {
+            previewPanel.hidden = true;
+            if (!translatePanel.isActive()) translatePanel.showPlaceholder();
+            return;
+        }
+
+        translatePanel.hide();
+        previewPanel.hidden = false;
+    }
+
     // Shared "back to the empty home screen" reset, used when leaving
     // settings or command mode.
     function resetHomeQuery() {
@@ -328,6 +338,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         queryInput.value = '';
         search.handleQueryInput('');
         layout.setQuery({ empty: true, translate: false });
+        syncSearchSurface();
         renderMainHint();
         syncControlStrip();
         queryInput.focus();
@@ -560,17 +571,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         const translating = search.isTranslateMode();
         layout.setQuery({ empty: layout.isEmptyQuery(value), translate: translating });
         syncControlStrip();
-        resultsList.hidden = translating;
-        runningApps.setSuspended(translating);
+        syncSearchSurface();
 
         if (translating) {
             setHint(hintMessage, HINT_TRANSLATE);
-            previewPanel.hidden = true;
-            if (!translatePanel.isActive()) translatePanel.showPlaceholder();
             return;
         }
-        if (runningApps.isEnabled()) runningApps.refresh();
-        translatePanel.hide();
 
         if (search.isClipboardMode()) {
             setHint(hintMessage, HINT_CLIPBOARD);
@@ -659,8 +665,15 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
     });
 
-    // When window shown via global hotkey, focus input and select all
-    onWindowShown(() => {
+    // When the launcher is shown, optionally clear an expired query before the
+    // usual focus/refresh/reveal pass runs.
+    onWindowShown((event) => {
+        if (event.payload === true) {
+            // Reuse the full "back to home" reset so query-owned UI like the
+            // translate surface, preview visibility, and running-apps strip all
+            // return to the normal empty-query state together.
+            resetHomeQuery();
+        }
         queryInput.focus();
         queryInput.select();
         smoothcaret.refresh(queryInput);
@@ -674,9 +687,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         // Re-read todos when nothing would be lost, so the quick view stays
         // fresh across day rollovers and edits from other Look clients.
         todoCmd.reloadIfClean();
-        // The window keeps its query across hide/show; re-assert the strip so an
-        // empty-query re-open lands back on the launchpad, replaying its
-        // entrance so it animates in each time Look is summoned.
+        // Most re-opens keep the query and selection; an expired hide first
+        // returns to the empty-query home state, then this re-asserts the strip
+        // and its entrance animation.
         syncControlStrip();
         superactions.replayEnter();
         // Last: the reveal is the frame the rest of the cascade lands in.
@@ -840,14 +853,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     function exitCommandMode() {
+        // The surface itself is resetHomeQuery's job; setModal first, or the
+        // reset re-runs the layout still believing command mode is up.
         queryInput.parentElement.style.display = '';
-        resultsList.hidden = false;
-        previewPanel.hidden = false;
-        translatePanel.hide();
         layout.setModal('command', false);
         resetHomeQuery();
-        runningApps.setSuspended(false);
-        if (runningApps.isEnabled()) runningApps.refresh();
     }
 
     async function executeCommand(cmdId, input, gen) {

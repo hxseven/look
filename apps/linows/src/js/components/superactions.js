@@ -51,6 +51,10 @@ import {
 } from '../icons.js';
 import {
     launchpadLayout,
+    launchpadTileValues,
+    launchpadWarnings,
+    refreshLaunchpadTiles,
+    pressLaunchpadTile,
     quickActionState,
     quickActionApply,
     weatherCurrent,
@@ -66,23 +70,23 @@ import {
     musicSnapshot,
     musicCommand,
 } from '../screens/commands/pomo.js';
-import { statsWidgetHtml } from '../screens/commands/todo.js';
 import * as platform from '../platform.js';
 import * as banner from './banner.js';
+import { gridPlacement, gridShape } from './launchpad-grid.js';
 
 let container = null;
 let built = false;
+// What the user asked for, before the platform gets a say (see applyEnabled).
+let configEnabled = true;
 let visible = false;
-// Todo-stats panel filling the dead space below the bento on the opaque
-// (no-transparency) panel. Null elsewhere. Populated by refreshTodo.
-let statsEl = null;
 // User setting (Settings -> Appearance -> Super Actions). When off the strip
 // never shows and its accelerators never fire; setVisible collapses to hidden.
 let enabled = true;
 
-// The shared catalog layout. Rendered from, never mutated. Fetched lazily and
-// retried until it lands (see ensureLayout); layoutFetch is the in-flight request.
-let layoutTiles = null;
+// The shared catalog layout: `{ tiles, columns, rows }`. Rendered from, never
+// mutated. Fetched lazily and retried until it lands (see ensureLayout);
+// layoutFetch is the in-flight request.
+let layout = null;
 let layoutFetch = null;
 // True while a reveal is awaiting the layout, so a second caller (init vs a
 // summon) doesn't run the reveal a second time and replay the animation.
@@ -114,6 +118,7 @@ let lunarKey = null;
 let weatherEls = null;
 let mediaEls = null;
 let weatherToken = 0;
+let customToken = 0;
 let mediaToken = 0;
 // 'internal' (pomo) or 'mpris': the source that last actually played. Breaks the
 // tie when both are paused so the tile resumes whichever the user last used.
@@ -155,32 +160,15 @@ const WEATHER_ICON = {
     thunder: cloudLightning,
 };
 
-// Destructive one-shot actions carry the danger tone and gate on an inline
-// confirm: first press arms the tile, second fires. Auto-disarms after this
-// window so a forgotten prompt never fires on a later stray press.
-const DANGER = new Set(['restart', 'shutdown']);
+// A forgotten prompt must not fire on a later stray press.
 const CONFIRM_TIMEOUT_MS = 3000;
+
+// Long enough to read a config error, which is longer than a toast.
+const WARNING_SECONDS = 5;
 const BATTERY_CHARGING_INFO_KEY = 'charging';
 const BATTERY_CHARGING_INFO_TEXT = 'charging';
 const CONTROL_INFO_KEYS = {
     battery: [BATTERY_CHARGING_INFO_KEY],
-};
-
-// action_id -> CSS grid-area suffix (pos-<area>) and glyph. The grid placement
-// lives in superactions.css; this maps the shared ids onto it.
-const AREA = {
-    lslot: 'todo',
-    bluetooth: 'bt',
-    wifi: 'wifi',
-    battery: 'batt',
-    theme: 'theme',
-    keepawake: 'keep',
-    screensaver: 'scr',
-    weather: 'weather',
-    mic: 'mic',
-    restart: 'rst',
-    shutdown: 'shut',
-    nowplaying: 'play',
 };
 
 const ICON = {
@@ -215,18 +203,81 @@ export function init(containerEl) {
 // (the backend can be briefly unready at startup). Concurrent callers share one
 // request. Resolves to whether the layout is now available.
 function ensureLayout() {
-    if (layoutTiles) return Promise.resolve(true);
+    if (layout) return Promise.resolve(true);
     if (!layoutFetch) {
         layoutFetch = launchpadLayout()
-            .then((tiles) => {
-                layoutTiles = tiles;
+            .then((resolved) => {
+                layout = resolved;
+                // Once per process, not per open: a broken drawing says so when
+                // the launchpad first appears, without nagging on every summon.
+                readWarnings().then(warningBanner);
             })
             .catch(() => {})
             .finally(() => {
                 layoutFetch = null;
             });
     }
-    return layoutFetch.then(() => !!layoutTiles);
+    return layoutFetch.then(() => !!layout);
+}
+
+/** Anything wrong with the drawing. Empty on the happy path and on failure. */
+async function readWarnings() {
+    try {
+        return (await launchpadWarnings()) || [];
+    } catch {
+        return [];
+    }
+}
+
+/**
+ * Raise a drawing problem in the window, and say whether there was one - so a
+ * caller with its own success banner knows to stay quiet.
+ *
+ * The count and the first message: a banner is not a log, and the rest are on
+ * stderr.
+ */
+export function warningBanner(warnings) {
+    const [first, ...rest] = warnings;
+    if (!first) return false;
+    banner.show(
+        rest.length ? `${first} (+${rest.length} more)` : first,
+        'warning',
+        WARNING_SECONDS,
+    );
+    return true;
+}
+
+/**
+ * Re-read the drawing, for the Ctrl+Shift+; config reload.
+ *
+ * The tiles are fetched once per process, which was right while the grid was a
+ * compile-time constant. ~/.look/super-actions.toml decides it now, and arranging
+ * tiles is an edit-and-look loop: without this an edit does nothing until the
+ * app is restarted, which reads as the feature being broken.
+ *
+ * Returns the warnings rather than showing them, so the caller folds config and
+ * launchpad problems into one banner.
+ */
+export async function reload() {
+    if (!enabled) return [];
+    let reloaded = null;
+    try {
+        reloaded = await launchpadLayout();
+    } catch {
+        return [];
+    }
+    // Most reloads are about something else and leave the drawing untouched.
+    // Comparing first keeps those from re-reading every adapter for a grid that
+    // did not move.
+    if (reloaded.tiles.length && JSON.stringify(reloaded) !== JSON.stringify(layout)) {
+        layout = reloaded;
+        built = false;
+        clearConfirm();
+        if (visible) await buildAndReveal();
+    }
+    // Asked for even when nothing moved: that is exactly what a broken drawing
+    // looks like, since it falls back to the default and the tiles never budge.
+    return readWarnings();
 }
 
 /**
@@ -294,20 +345,43 @@ export function isVisible() {
 // its accelerators stop firing; turning it on lets the next syncControlStrip
 // reveal it on the empty home screen.
 export function setEnabled(on) {
-    if (enabled === on) return;
-    enabled = on;
-    if (!on) setVisible(false);
+    configEnabled = on;
+    applyEnabled();
+}
+
+// Re-derive after something moved the floating gate at runtime - the blur
+// fallback toggle is the one thing that does.
+export function refreshAvailability() {
+    applyEnabled();
+}
+
+// Same rule as the inner gap: the launchpad is the empty home screen's resting
+// state, and a stack that cannot render that (platform.floatingSupported)
+// shows the results list there instead. The config value is never touched, so
+// the launchpad comes back by itself on a capable setup.
+function applyEnabled() {
+    const next = configEnabled && platform.floatingSupported();
+    if (enabled === next) return;
+    enabled = next;
+    if (!next) setVisible(false);
 }
 
 export function isEnabled() {
     return enabled;
 }
 
+// Drop the built DOM so the next reveal rebuilds it. The stats block below the
+// bento exists only where the panel stays opaque, and the blur toggle flips
+// that (platform.floatingSupported) while the strip is already built.
+export function invalidate() {
+    built = false;
+}
+
 // Build (once) then reveal: read live state, start the timers, play the cascade.
 // Fetches the layout first if needed, so a summon before/after a failed prefetch
 // still builds instead of no-opping forever.
 async function buildAndReveal() {
-    if (!layoutTiles) {
+    if (!layout) {
         if (revealPending) return; // another caller is already awaiting the layout
         revealPending = true;
         const ready = await ensureLayout();
@@ -316,7 +390,7 @@ async function buildAndReveal() {
     }
     if (!visible) return; // hidden again while the layout was in flight
     if (!built) {
-        render(layoutTiles);
+        render(layout);
         built = true;
     }
     refreshState();
@@ -388,20 +462,34 @@ function activate(id) {
         return true;
     }
 
-    // Destructive buttons arm on the first press and fire on the second.
-    if (ctl?.wired && ctl.role === 'action' && ctl.danger) {
-        if (pendingConfirmId === id) {
-            clearConfirm();
-            flash(el);
-            runAction(id, ctl);
-        } else {
-            armConfirm(id, ctl);
-        }
+    // One gate, whatever the tile is: a first press on anything that asks arms
+    // it, a second fires. Restart and Shut Down used to be named here by id.
+    if (ctl?.confirm && pendingConfirmId !== id) {
+        armConfirm(id, ctl);
+        return true;
+    }
+    clearConfirm();
+
+    // No adapter: the core holds the command and runs it by name.
+    if (ctl?.role === 'custom') {
+        if (!ctl.pressable) return true;
+        flash(el);
+        pressLaunchpadTile(id)
+            .then((error) => {
+                if (error) banner.show(error, 'error');
+                else refreshCustomTiles((customToken += 1));
+            })
+            .catch(() => {});
         return true;
     }
 
     flash(el);
-    if (!ctl?.wired) return true;
+    if (!ctl?.wired) {
+        // The adapter said why it cannot act (no screensaver service, no mic);
+        // silence here reads as a dead key.
+        if (ctl?.reason) banner.show(ctl.reason, 'info', 1.6);
+        return true;
+    }
     if (ctl.role === 'toggle') applyControl(id, ctl);
     else if (ctl.role === 'action') {
         if (ctl.toggleIntent) applyMic(id, ctl);
@@ -416,7 +504,7 @@ function armConfirm(id, ctl) {
     clearConfirm();
     pendingConfirmId = id;
     ctl.el.classList.add('is-confirming');
-    ctl.labelEl.textContent = 'Confirm?';
+    ctl.labelEl.textContent = ctl.confirm || 'Confirm?';
     confirmTimer = setTimeout(clearConfirm, CONFIRM_TIMEOUT_MS);
 }
 
@@ -540,6 +628,9 @@ function refreshState() {
     const myToken = (stateToken += 1);
     for (const [id, ctl] of controls) refreshControl(id, ctl, myToken);
     refreshWeather((weatherToken += 1));
+    // Shares the summon token: a superseded open must not let a late
+    // value land on tiles that have since been torn down.
+    refreshCustomTiles((customToken += 1));
     refreshNowPlaying((mediaToken += 1));
 }
 
@@ -578,6 +669,7 @@ async function refreshControl(id, ctl, myToken) {
     if (myToken !== stateToken) return;
     const s = status?.state;
     const wired = !!s && s.state !== 'unavailable';
+    ctl.reason = wired ? null : s?.reason || null;
     if (ctl.role === 'toggle') {
         ctl.wired = wired;
         setToggleState(ctl, wired && s.state === 'on');
@@ -720,15 +812,6 @@ async function refreshTodo() {
     openTasks = mine.filter((t) => !t.done).map((t) => t.name);
     taskCursor = 0;
     renderSlot();
-    renderStatsWidget(tasks);
-}
-
-// Reuses the priority slot's todoList() rows. width = card content (minus 30px
-// chrome: 2x14 padding + 2x1 border) so the heatmap cells scale to fit.
-function renderStatsWidget(tasks) {
-    if (!statsEl) return;
-    const width = Math.max(280, statsEl.clientWidth - 30);
-    statsEl.innerHTML = statsWidgetHtml(tasks || [], width);
 }
 
 // Rotate through the open tasks so a long day's list all gets a turn, matching
@@ -916,7 +999,8 @@ function todayKey() {
 
 // --- Rendering --------------------------------------------------------------
 
-function render(tiles) {
+function render(layout) {
+    const { tiles } = layout;
     tilesById = new Map();
     mnemonicIndex = new Map();
     controls = new Map();
@@ -926,22 +1010,30 @@ function render(tiles) {
 
     const grid = document.createElement('div');
     grid.className = 'control-strip-grid';
-    for (const tile of tiles) grid.appendChild(buildTile(tile));
 
-    // Per-tile index drives the entrance stagger (CSS animation-delay).
+    // The grid is whatever the drawing in ~/.look/super-actions.toml reaches. The
+    // CSS used to declare `grid-template-areas` and every tile's `grid-area`,
+    // which meant the arrangement was written once in the core and again here,
+    // and the two had to agree. The core resolves it now and this only draws.
+    const shape = gridShape(tiles, layout);
+    grid.style.setProperty('--ctl-cols', shape.columns);
+    grid.style.setProperty('--ctl-rows', shape.rows);
+
+    for (const tile of tiles) {
+        const el = buildTile(tile);
+        const at = gridPlacement(tile);
+        el.style.gridColumn = at.column;
+        el.style.gridRow = at.row;
+        grid.appendChild(el);
+    }
+
+    // Per-tile index drives the entrance stagger (CSS animation-delay). The core
+    // sends tiles in reading order, so this follows the screen rather than the
+    // order names happen to appear in the drawing.
     [...grid.children].forEach((el, i) => el.style.setProperty('--i', i));
 
     container.innerHTML = '';
     container.appendChild(grid);
-
-    // Opaque panel only: fill the dead space below the bento with todo stats.
-    // Transparent/floating panels leave it see-through, so nothing to fill.
-    statsEl = null;
-    if (!platform.hasCompositor()) {
-        statsEl = document.createElement('div');
-        statsEl.className = 'control-strip-stats';
-        container.appendChild(statsEl);
-    }
 }
 
 function buildTile(tile) {
@@ -958,21 +1050,25 @@ function buildTile(tile) {
             return buildAction(tile);
         case 'media':
             return buildMedia(tile);
+        case 'custom':
+            return buildCustom(tile);
         default:
+            // A role this build has never heard of. A bare tile keeps its cell
+            // rather than escaping the grid, which is the same bargain the
+            // shape fallback makes for a payload from an older core.
             return tileEl(tile.action_id, 'action');
     }
 }
 
-// Base tile: a frosted card placed into its named grid area, tagged with the
-// role variant (and a tone for danger/active modifiers).
+// Base tile: a frosted card tagged with the role variant (and a tone for
+// danger/active modifiers). Placement is set by the caller from the tile's own
+// coordinates, so nothing here needs to know which tile this is.
 function tileEl(actionId, variant, tone) {
     const el = document.createElement('button');
     el.type = 'button';
     el.tabIndex = -1;
     el.dataset.id = actionId;
     el.className = `ctl-tile ctl-tile--${variant}`;
-    // An unknown catalog id keeps a plain tile rather than escaping its grid area.
-    if (AREA[actionId]) el.classList.add(`pos-${AREA[actionId]}`);
     if (tone) el.classList.add(`is-${tone}`);
     return el;
 }
@@ -981,6 +1077,30 @@ function iconSpan(svg) {
     const el = document.createElement('span');
     el.className = 'ctl-icon';
     el.innerHTML = svg || '';
+    return el;
+}
+
+// Paint an icon into a span: a built-in glyph by name, or a user's own image,
+// which the backend has already read off disk and inlined as a data URL. The
+// file is drawn as a CSS mask rather than an <img> so it takes the tile's
+// colour the way an inline glyph does, including the active and danger tints;
+// the alternative arrives in its own palette and reads as pasted on. Nothing
+// recognised leaves the span empty, which CSS then collapses.
+function applyIcon(el, name, fallback = '') {
+    if (!el) return;
+    const glyph = ICON[name];
+    const inlined = typeof name === 'string' && name.startsWith('data:');
+    const src = !glyph && inlined ? name : null;
+    el.innerHTML = glyph || (src ? '' : fallback);
+    el.classList.toggle('ctl-icon--file', Boolean(src));
+    if (src) el.style.setProperty('--ctl-icon-src', `url("${src}")`);
+    else el.style.removeProperty('--ctl-icon-src');
+}
+
+// An icon span already carrying `name`, for the tiles built with one.
+function iconSpanFor(name, fallback) {
+    const el = iconSpan('');
+    applyIcon(el, name, fallback);
     return el;
 }
 
@@ -1123,6 +1243,139 @@ function buildInfo(tile) {
     return el;
 }
 
+// A tile the user declared in ~/.look/super-actions.toml. Same anatomy as the tiles
+// beside it; the core runs the command and this only draws the result.
+function buildCustom(tile) {
+    // A tile that only acts is drawn like Mic and Screensaver: a glyph over a
+    // name. A placeholder would be a permanent "--".
+    if (!tile.has_value) {
+        const el = tileEl(tile.action_id, 'action');
+        el.appendChild(iconSpanFor(tile.icon, power));
+        const label = document.createElement('span');
+        label.className = 'ctl-label';
+        label.innerHTML = labelHTML(tile.title, tile.mnemonic);
+        el.appendChild(label);
+        controls.set(tile.action_id, {
+            role: 'custom',
+            el,
+            title: tile.title,
+            actionId: tile.action_id,
+            pressable: Boolean(tile.pressable),
+            confirm: tile.confirm || null,
+            mnemonic: tile.mnemonic || null,
+            labelEl: label,
+        });
+
+        // Without this the tile has no tilesById entry, so activate() bails on
+        // its first line and neither click nor mnemonic reaches it.
+        bindActionable(el, tile);
+        return el;
+    }
+
+    const el = tileEl(tile.action_id, 'custom');
+    // One cell fits the headline alone.
+    const roomy = tile.row_span > 1 || tile.col_span > 1;
+    // Shows before the first reading lands; a reading's own icon replaces it.
+    const icon = iconSpanFor(tile.icon);
+
+    const text = document.createElement('span');
+    text.className = 'ctl-text';
+    text.innerHTML =
+        `<span class="ctl-caps">${labelHTML(tile.title, tile.mnemonic)}</span>` +
+        `<span class="ctl-value">--</span>` +
+        (roomy
+            ? '<span class="ctl-custom-caption"></span><span class="ctl-custom-lines"></span>'
+            : '');
+
+    if (roomy) {
+        // Only the name shares the icon's row. The reading and its lines start
+        // at the tile's edge rather than in a gutter the icon opened, which a
+        // one-cell tile has no room to do and a tall one no reason to.
+        const head = document.createElement('span');
+        head.className = 'ctl-custom-head';
+        head.appendChild(icon);
+        head.appendChild(text.querySelector('.ctl-caps'));
+        text.prepend(head);
+        el.appendChild(text);
+    } else {
+        el.appendChild(icon);
+        el.appendChild(text);
+    }
+
+    controls.set(tile.action_id, {
+        role: 'custom',
+        el,
+        title: tile.title,
+        actionId: tile.action_id,
+        // A tile with no `press` is a readout.
+        pressable: Boolean(tile.pressable),
+        confirm: tile.confirm || null,
+        // Decides whether the caption may replace the name.
+        mnemonic: tile.mnemonic || null,
+        // Kept so a reading with no icon of its own does not wipe it.
+        icon: tile.icon || null,
+        // Also the label an armed confirm writes into.
+        labelEl: text.querySelector('.ctl-caps'),
+        iconEl: el.querySelector('.ctl-icon'),
+        valueEl: text.querySelector('.ctl-value'),
+        captionEl: text.querySelector('.ctl-custom-caption'),
+        linesEl: text.querySelector('.ctl-custom-lines'),
+    });
+    bindActionable(el, tile);
+    return el;
+}
+
+// Two calls on purpose: the first reads a cache and returns at once, so the
+// strip never waits on a command to paint; the second spawns.
+async function refreshCustomTiles(myToken) {
+    const custom = [...controls.values()].filter((c) => c.role === 'custom' && c.valueEl);
+    if (custom.length === 0) return;
+
+    const apply = (values) => {
+        if (myToken !== customToken) return;
+        for (const ctl of custom) {
+            const v = values?.[ctl.actionId];
+            // No entry: never run, or printed nothing - which hides the tile.
+            ctl.el.hidden = !v;
+            if (!v) continue;
+            ctl.valueEl.textContent = v.value ?? '--';
+            ctl.el.classList.toggle('is-active', (v.state || '').toLowerCase() === 'on');
+            applyIcon(ctl.iconEl, v.icon || ctl.icon);
+            // The command's caption wins over the tile's name, as Weather shows
+            // the condition. Unless the tile has a key: that letter is in the name.
+            if (!ctl.mnemonic && v.caption) {
+                ctl.labelEl.textContent = v.caption;
+            }
+            if (ctl.captionEl) {
+                ctl.captionEl.textContent = ctl.mnemonic ? v.caption || '' : '';
+            }
+            if (ctl.linesEl) {
+                ctl.linesEl.innerHTML = '';
+                for (const line of (v.lines || []).slice(0, 3)) {
+                    const el = document.createElement('span');
+                    el.textContent = line;
+                    ctl.linesEl.appendChild(el);
+                }
+            }
+        }
+    };
+
+    try {
+        apply(await launchpadTileValues());
+    } catch (_) {
+        return; // a core too old to answer leaves the placeholders alone
+    }
+
+    try {
+        const [refreshed, errors] = await refreshLaunchpadTiles();
+        for (const message of errors || []) banner.show(message, 'error');
+        // Only when something ran: most opens are inside every tile's window.
+        if (refreshed > 0) apply(await launchpadTileValues());
+    } catch (_) {
+        // A failed refresh keeps whatever the tiles already showed.
+    }
+}
+
 // L info (1x2): the weather stack. Filled from the external feed by
 // refreshWeather; shows placeholder dashes until the first reading lands.
 function buildWeather(tile) {
@@ -1147,7 +1400,7 @@ function buildWeather(tile) {
 // one-shot, Restart / Shut Down via inline confirm, Mic as a mute toggle (it
 // carries an off caption). Danger tone for the destructive ones.
 function buildAction(tile) {
-    const danger = DANGER.has(tile.action_id);
+    const danger = Boolean(tile.confirm);
     const el = tileEl(tile.action_id, 'action', danger ? 'danger' : null);
     const icon = iconSpan(ICON[tile.action_id]);
     el.appendChild(icon);
@@ -1167,6 +1420,8 @@ function buildAction(tile) {
         // firing once (Screensaver, Restart, Shut Down). Mirrors macOS.
         toggleIntent: tile.off_label != null,
         danger,
+        // The question this tile asks before it fires, from the core.
+        confirm: tile.confirm || null,
         wired: false,
     });
     return el;

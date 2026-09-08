@@ -7,6 +7,8 @@ import SwiftUI
 /// slot, which reads the live Todo / Pomo stores.
 struct EmptyStateLaunchpadView: View {
     let tiles: [LaunchpadTileModel]
+    /// The shape the drawing declared, when the payload carries one.
+    var shape: LaunchpadGrid.Shape?
     var controller: LaunchpadController
     var themeStore: ThemeStore
     /// Changes each time the launcher opens, replaying the spawn cascade.
@@ -14,37 +16,25 @@ struct EmptyStateLaunchpadView: View {
 
     private typealias Const = AppConstants.Launcher.Launchpad
 
-    /// Reading-order position of each tile in the spawn cascade, so the grid
-    /// settles in top-left to bottom-right rather than all at once.
-    private enum RevealIndex {
-        static let slot = 0
-        static let bluetooth = 1
-        static let wifi = 2
-        static let battery = 3
-        static let theme = 4
-        static let keepAwake = 5
-        static let screensaver = 6
-        static let weather = 7
-        static let mic = 8
-        static let restart = 9
-        static let shutdown = 10
-        static let nowPlaying = 11
-    }
+    private var showsNowPlaying: Bool { tiles.contains(role: .media) }
 
-    private var byID: [String: LaunchpadTileModel] {
-        Dictionary(tiles.map { ($0.actionId, $0) }, uniquingKeysWith: { first, _ in first })
+    /// Cells to points. Cheap enough to rebuild; it is four numbers.
+    private var grid: LaunchpadGrid {
+        LaunchpadGrid(tiles: tiles, declared: shape, rowHeight: Const.rowHeight, gap: Const.gap)
     }
 
     var body: some View {
         GeometryReader { geo in
-            let cell = cellWidth(total: geo.size.width)
-            layout(cell: cell)
+            layout(width: geo.size.width)
         }
         .frame(height: totalHeight)
         .padding(.top, Const.outerTopPadding)
         // Poll system now-playing while the launchpad is on screen, so external
         // changes (pausing in a browser) are reflected. Cancelled on disappear.
-        .task {
+        // Keyed on the tile so an edit adding or removing it starts or stops
+        // the poll, rather than waking every few seconds to feed nothing.
+        .task(id: showsNowPlaying) {
+            guard showsNowPlaying else { return }
             while !Task.isCancelled {
                 await controller.refreshNowPlaying()
                 try? await Task.sleep(for: .seconds(Const.nowPlayingPollSeconds))
@@ -54,84 +44,34 @@ struct EmptyStateLaunchpadView: View {
 
     // MARK: Geometry
 
-    private func cellWidth(total: CGFloat) -> CGFloat {
-        let gaps = Const.gap * CGFloat(Const.columns - 1)
-        return max(0, (total - gaps) / CGFloat(Const.columns))
-    }
-
-    private func width(columns: Int, cell: CGFloat) -> CGFloat {
-        CGFloat(columns) * cell + Const.gap * CGFloat(columns - 1)
-    }
-
-    private func height(rows: Int) -> CGFloat {
-        CGFloat(rows) * Const.rowHeight + Const.gap * CGFloat(rows - 1)
-    }
-
-    private var totalHeight: CGFloat { height(rows: 3) }
+    private var totalHeight: CGFloat { grid.height }
 
     // MARK: Layout
     //
-    // The spec's fixed order tiles a 6-column grid as three rows:
-    //   row 0/1 cols 0-1: L slot (2x2) | cols 2-4: BT, Wi-Fi, Battery
-    //                                   |          Theme, Keep Awake, Screensaver
-    //                                   | col 5:   Weather (1x2)
-    //   row 2 cols 0-5: Mic, Restart, Shut Down, Now Playing(3)
-    // SwiftUI has no cell spanning, so the arrangement is composed explicitly
-    // from the known order rather than auto-packed.
+    // Every tile is placed at the cell the core resolved for it. This used to be
+    // composed by hand - nested stacks naming each tile in the order the catalog
+    // happened to return them - because SwiftUI has no cell spanning and the
+    // arrangement was known in advance. It is not known in advance any more:
+    // ~/.look/super-actions.toml decides it, so the view offsets and sizes each tile
+    // from its own coordinates and never reconstructs an arrangement.
 
-    @ViewBuilder
-    private func layout(cell: CGFloat) -> some View {
-        VStack(spacing: Const.gap) {
-            HStack(alignment: .top, spacing: Const.gap) {
-                slot(cell: cell)
-                    .frame(width: width(columns: 2, cell: cell), height: height(rows: 2))
+    private func layout(width: CGFloat) -> some View {
+        let grid = self.grid
+        return ZStack(alignment: .topLeading) {
+            // Reading order, because that is the order the core sends. It is
+            // also the order the entrance cascade wants, so the index is the
+            // cascade position - no second table of who animates when.
+            ForEach(Array(tiles.enumerated()), id: \.element.actionId) { index, model in
+                let box = grid.frame(for: model, totalWidth: width)
+                tileContent(model)
+                    .frame(width: box.width, height: box.height)
+                    // On the container: symbol effects reach the images inside.
                     .symbolEffect(.bounce, value: revealToken)
-                    .spawnReveal(index: RevealIndex.slot, token: revealToken)
-
-                VStack(spacing: Const.gap) {
-                    HStack(spacing: Const.gap) {
-                        tileView(LaunchpadActionID.bluetooth, cell: cell, reveal: RevealIndex.bluetooth)
-                        tileView(LaunchpadActionID.wifi, cell: cell, reveal: RevealIndex.wifi)
-                        tileView(LaunchpadActionID.battery, cell: cell, reveal: RevealIndex.battery)
-                    }
-                    HStack(spacing: Const.gap) {
-                        tileView(LaunchpadActionID.theme, cell: cell, reveal: RevealIndex.theme)
-                        tileView(LaunchpadActionID.keepAwake, cell: cell, reveal: RevealIndex.keepAwake)
-                        tileView(LaunchpadActionID.screensaver, cell: cell, reveal: RevealIndex.screensaver)
-                    }
-                }
-
-                tileView(LaunchpadActionID.weather, cell: cell, reveal: RevealIndex.weather)
-            }
-
-            HStack(spacing: Const.gap) {
-                tileView(LaunchpadActionID.mic, cell: cell, reveal: RevealIndex.mic)
-                tileView(LaunchpadActionID.restart, cell: cell, reveal: RevealIndex.restart)
-                tileView(LaunchpadActionID.shutdown, cell: cell, reveal: RevealIndex.shutdown)
-                tileView(LaunchpadActionID.nowPlaying, cell: cell, reveal: RevealIndex.nowPlaying)
+                    .spawnReveal(index: index, token: revealToken)
+                    .offset(x: box.minX, y: box.minY)
             }
         }
-    }
-
-    @ViewBuilder
-    private func slot(cell: CGFloat) -> some View {
-        LaunchpadLSlotView(themeStore: themeStore)
-    }
-
-    /// Renders the tile for `actionID` at its natural size, sourcing labels and
-    /// the mnemonic from the decoded catalog model. `reveal` places it in the
-    /// spawn cascade.
-    @ViewBuilder
-    private func tileView(_ actionID: String, cell: CGFloat, reveal: Int) -> some View {
-        if let model = byID[actionID] {
-            let w = width(columns: model.columnSpan, cell: cell)
-            let h = height(rows: model.rowSpanCount)
-            tileContent(model)
-                .frame(width: w, height: h)
-                // On the container: symbol effects reach the images inside.
-                .symbolEffect(.bounce, value: revealToken)
-                .spawnReveal(index: reveal, token: revealToken)
-        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     @ViewBuilder
@@ -175,7 +115,18 @@ struct EmptyStateLaunchpadView: View {
                 themeStore: themeStore
             )
         case .slot:
-            EmptyView()
+            // Was placed by its own branch of the old hand-composed layout, and
+            // reached this switch only to render nothing. It is a tile like the
+            // rest now, so it can be moved, resized or left out of the drawing.
+            LaunchpadLSlotView(themeStore: themeStore)
+        case .custom:
+            LaunchpadCustomTile(
+                model: model,
+                value: controller.customValue(for: model.actionId),
+                isPressable: model.pressable,
+                confirming: controller.pendingConfirmActionID == model.actionId,
+                themeStore: themeStore
+            ) { controller.activate(model) }
         }
     }
 }
@@ -331,6 +282,141 @@ private struct LaunchpadInfoTile: View {
     }
 }
 
+/// A tile the user declared in `~/.look/super-actions.toml`. Same anatomy as the
+/// tiles beside it; how much shows is how big the user drew it. Placeholder
+/// until the first run resolves, like Battery and Weather.
+private struct LaunchpadCustomTile: View {
+    let model: LaunchpadTileModel
+    /// Nil until the tile's command has produced something.
+    let value: LaunchpadTileValue?
+    /// Whether pressing it does anything. A tile with no `press` is a readout.
+    let isPressable: Bool
+    /// Armed by a first press. There is no dialog: if the tile does not show
+    /// it, nothing does.
+    let confirming: Bool
+    var themeStore: ThemeStore
+    let onPress: () -> Void
+
+    private typealias Const = AppConstants.Launcher.Launchpad
+
+    /// One cell fits the headline alone.
+    private var showsDetail: Bool { model.rowSpanCount > 1 || model.columnSpan > 1 }
+
+    /// The command's caption wins over the tile's name - the rule Weather uses,
+    /// showing the condition rather than the word "Weather". Unless the tile
+    /// has a key: that letter lives in the name.
+    private var label: String {
+        let text = model.mnemonic == nil ? (value?.caption ?? model.title) : model.title
+        // Uppercased to sit level with BATTERY and CLEAR beside it.
+        return text.uppercased()
+    }
+
+    /// The caption line, only when it is not already doing duty as the label.
+    private var detailCaption: String? {
+        guard showsDetail, let caption = value?.caption, model.mnemonic != nil else { return nil }
+        return caption.uppercased()
+    }
+
+    /// A tile that only acts, drawn like Mic and Screensaver. A placeholder
+    /// would be a permanent "--" for something never going to fill in.
+    private var button: some View {
+        VStack(spacing: 8) {
+            Image(systemName: value?.icon ?? model.icon ?? Const.customTileFallbackIcon)
+                .font(.system(size: 24, weight: .medium))
+                .foregroundColor(confirming ? themeStore.dangerColor() : themeStore.accentColor())
+            mnemonicText(
+                confirming ? (model.confirm ?? "Confirm?") : model.title,
+                mnemonic: confirming ? nil : model.mnemonic,
+                font: themeStore.uiFont(size: Const.titleFontSize, weight: .semibold),
+                base: confirming ? themeStore.dangerColor() : themeStore.fontColor(),
+                highlight: themeStore.warningColor()
+            )
+            .lineLimit(1)
+        }
+        .padding(.horizontal, 10)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(
+            frostedTile(
+                themeStore: themeStore,
+                tint: confirming ? themeStore.dangerColor() : nil,
+                tintOpacity: confirming ? launchpadAlertTintOpacity : 0
+            )
+        )
+        .overlay(tileBorder(isOn: false, themeStore: themeStore))
+    }
+
+    private var body_: some View {
+        // Battery's anatomy, and the Linux/Windows strip's: icon in a column of
+        // its own, caption and value stacked beside it.
+        HStack(spacing: 10) {
+            if let icon = (value?.icon ?? model.icon), !icon.isEmpty {
+                Image(systemName: icon)
+                    .font(.system(size: 18, weight: .medium))
+                    .foregroundColor(themeStore.accentColor())
+                    .contentTransition(.symbolEffect(.replace))
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                mnemonicText(
+                    confirming ? (model.confirm?.uppercased() ?? "CONFIRM?") : label,
+                    mnemonic: confirming ? nil : model.mnemonic,
+                    font: themeStore.uiFont(size: Const.captionFontSize - 1, weight: .medium),
+                    base: themeStore.mutedTextColor(),
+                    highlight: themeStore.warningColor()
+                )
+                .lineLimit(1)
+
+                Text(value?.value ?? Const.infoPlaceholderValue)
+                    .font(themeStore.uiFont(size: Const.valueFontSize - 6, weight: .bold))
+                    .foregroundColor(themeStore.fontColor())
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+                    .contentTransition(.numericText())
+                    .animation(Motion.Value.rollDigits, value: value?.value ?? "")
+
+                if showsDetail {
+                    if let detailCaption {
+                        Text(detailCaption)
+                            .font(themeStore.uiFont(size: Const.captionFontSize - 1, weight: .medium))
+                            .foregroundColor(themeStore.mutedTextColor())
+                            .lineLimit(1)
+                    }
+                    // Clipped, not scrolled: a tile is a glance, not a pane.
+                    let extra = Array((value?.lines ?? []).prefix(3))
+                    ForEach(Array(extra.enumerated()), id: \.offset) { _, line in
+                        Text(line)
+                            .font(themeStore.uiFont(size: Const.smallLabelFontSize - 0.5, weight: .regular))
+                            .foregroundColor(themeStore.secondaryTextColor())
+                            .lineLimit(1)
+                    }
+                }
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        .background(frostedTile(themeStore: themeStore))
+        .overlay(tileBorder(isOn: value?.isOn ?? false, themeStore: themeStore))
+    }
+
+    @ViewBuilder
+    private var face: some View {
+        if model.hasValue { body_ } else { button }
+    }
+
+    var body: some View {
+        // Decided by the tile, not by whether a value has arrived yet.
+        if isPressable {
+            Button(action: onPress) { face }
+                .buttonStyle(PressableSurfaceStyle())
+        } else {
+            face
+        }
+    }
+}
+
 /// A read-only weather tile: a tall single-column tile stacking a condition
 /// icon, the temperature, the condition, and today's high/low and rain chance.
 /// Shows a placeholder icon and value until the first reading resolves.
@@ -422,7 +508,7 @@ private struct LaunchpadActionTile: View {
                     .font(.system(size: 18, weight: .medium))
                     .foregroundColor(tint)
                 mnemonicText(
-                    confirming ? "Confirm?" : model.title,
+                    confirming ? (model.confirm ?? "Confirm?") : model.title,
                     mnemonic: confirming ? nil : model.mnemonic,
                     font: themeStore.uiFont(size: Const.smallLabelFontSize, weight: .semibold),
                     base: confirming ? themeStore.dangerColor() : themeStore.secondaryTextColor(),
@@ -451,7 +537,7 @@ private struct LaunchpadActionTile: View {
     private var border: some View {
         // Same scaled radius as `frostedTile`, or the outline cuts the corners.
         let shape = RoundedRectangle(
-            cornerRadius: themeStore.surfaceCornerRadius(Const.cornerRadius),
+            cornerRadius: themeStore.tileRadius,
             style: .continuous
         )
         if confirming || micMuted {
@@ -541,7 +627,7 @@ private struct LaunchpadMediaTile: View {
                 .padding(.horizontal, 8)
                 .padding(.vertical, 6)
                 .background(themeStore.controlFillColor())
-                .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: themeStore.controlRadius, style: .continuous))
             }
             .buttonStyle(PressableSurfaceStyle())
             transportButton("forward.fill", action: onNext)
@@ -587,8 +673,7 @@ func frostedTile(
     tint: Color? = nil,
     tintOpacity: Double = 0
 ) -> some View {
-    let radius = cornerRadius
-        ?? themeStore.surfaceCornerRadius(AppConstants.Launcher.Launchpad.cornerRadius)
+    let radius = cornerRadius ?? themeStore.tileRadius
     return ZStack {
         ThemedBackdrop(themeStore: themeStore, blendingMode: blendingMode, cornerRadius: radius)
         themeStore.controlFillColor()
@@ -607,7 +692,7 @@ func frostedTile(
 private func tileBorder(isOn: Bool, themeStore: ThemeStore) -> some View {
     // Must track `frostedTile`'s radius, or the two disagree at the corners.
     let shape = RoundedRectangle(
-        cornerRadius: themeStore.surfaceCornerRadius(AppConstants.Launcher.Launchpad.cornerRadius),
+        cornerRadius: themeStore.tileRadius,
         style: .continuous
     )
     if isOn {

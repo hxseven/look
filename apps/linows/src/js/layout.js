@@ -40,7 +40,6 @@ let hintMessage = null;
 let copyright = null;
 let leftFooter = null;
 let rightFooter = null;
-let hintsInFooters = false;
 
 export function init() {
     win = document.getElementById('app');
@@ -132,9 +131,10 @@ function drawnImageRect(winRect) {
 }
 
 /** One rule for "empty query", shared by the layout gate and by the search and
- *  selection guards below. Whitespace still searches, so it is not empty. */
+ *  selection guards below. Trimmed, because search.js decides it that way: a
+ *  lone space was empty to one and not the other, and fell between them. */
 export function isEmptyQuery(query) {
-    return query === '';
+    return query.trim() === '';
 }
 
 /** True when an empty query leaves the results row off screen: the rest state,
@@ -179,23 +179,40 @@ function apply() {
     win.classList.toggle('bar-free', barFree);
     win.classList.toggle('floating-grid', floatingGrid);
     mainPane.classList.toggle('translating', translateQuery);
-    placeHints(floatingGrid);
+    placeHints(floating, floatingGrid);
     if (floating) updateTileOrigins();
     blur.sync();
 }
 
-// The nodes MOVE between the bottom bar and the card footers (not clone),
-// so there is a single source of hint text either way.
-function placeHints(floatingGrid) {
-    if (!hintBar || floatingGrid === hintsInFooters) return;
-    hintsInFooters = floatingGrid;
+// The nodes MOVE between the bottom bar and the card footers (not clone), so
+// there is a single source of hint text either way. Floating, the bar is gone:
+// the grid splits them across both footers, a single card takes both. Compared
+// by element, because the translate card rebuilds its footer on every render.
+function placeHints(floating, floatingGrid) {
+    if (!hintBar) return;
+    let msgTarget = hintBar;
+    let copyTarget = hintBar;
     if (floatingGrid) {
-        leftFooter.appendChild(hintMessage);
-        rightFooter.appendChild(copyright);
-    } else {
-        hintBar.appendChild(hintMessage);
-        hintBar.appendChild(copyright);
+        msgTarget = leftFooter;
+        copyTarget = rightFooter;
+    } else if (floating) {
+        // Translation swaps the results row out; every other single-card state
+        // still renders through the left column.
+        const solo = mainPane.querySelector('.translate-panel > .pane-footer') || leftFooter;
+        msgTarget = solo;
+        copyTarget = solo;
     }
+    if (hintMessage.parentElement === msgTarget && copyright.parentElement === copyTarget) return;
+    msgTarget.appendChild(hintMessage);
+    copyTarget.appendChild(copyright);
+}
+
+/** Reclaim the hint nodes before the translate card that parked them is torn
+ *  down, or they go with it. */
+export function releaseHints() {
+    if (!hintBar || !hintMessage.closest('.translate-panel')) return;
+    hintBar.appendChild(hintMessage);
+    hintBar.appendChild(copyright);
 }
 
 function updateTileOrigins() {

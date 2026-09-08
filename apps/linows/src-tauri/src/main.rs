@@ -35,7 +35,7 @@ use platform::linux::gpu;
 use state::AppState;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 
 /// Timestamp (ms) of last window show, used to debounce focus-loss auto-hide.
 static LAST_SHOWN_AT: AtomicU64 = AtomicU64::new(0);
@@ -72,14 +72,13 @@ fn supports_transparency() -> bool {
     }
 }
 
-const BASE_W: f64 = 860.0;
-const BASE_H: f64 = 600.0;
+/// tauri.conf's window size, and the 1.0x rung of `scaled_window_size`.
+pub(crate) const BASE_W: f64 = 860.0;
+pub(crate) const BASE_H: f64 = 600.0;
 /// Grace period (ms) after show - ignore focus-loss within this window.
 const AUTO_HIDE_GRACE_MS: u64 = 300;
 /// Guard (ms) to prevent re-showing after auto-hide (GNOME X11 race).
 const AUTO_HIDE_RESHOW_GUARD_MS: u64 = 200;
-const EVENT_WINDOW_SHOWN: &str = "window-shown";
-
 /// Arm the launchpad, then hide the window once the webview has painted that
 /// frame - see `commands::hide_armed`.
 fn hide_launcher(window: &tauri::WebviewWindow) {
@@ -143,12 +142,11 @@ fn toggle_window(app_handle: &tauri::AppHandle) {
             }
             let _ = window.set_always_on_top(true);
         }
-        commands::show_launcher(&window);
-        if !placed_by_compositor && tiling {
-            recenter_window(&window);
-        }
-        let _ = window.emit(EVENT_WINDOW_SHOWN, ());
-
+        commands::show_launcher_before_event(&window, || {
+            if !placed_by_compositor && tiling {
+                recenter_window(&window);
+            }
+        });
         // For X11 windows (native X11, or XWayland when the AppImage forces
         // GDK_BACKEND=x11), bypass the compositor's focus-stealing
         // prevention by bumping _NET_WM_USER_TIME before activation.
@@ -560,7 +558,7 @@ fn main() {
     setup_dev_env();
 
     #[cfg(target_os = "linux")]
-    let disable_gpu = gpu::detect_and_disable_virtual_gpu() || gpu::arch_disable_gpu_from_config();
+    let disable_gpu = gpu::detect_and_disable_virtual_gpu() || gpu::disable_gpu_from_config();
 
     sync_autostart();
 
@@ -758,6 +756,10 @@ fn main() {
             // qactions/controls, see docs/writing-controls.md)
             qactions::quick_actions,
             qactions::launchpad_layout,
+            qactions::launchpad_tile_values,
+            qactions::refresh_launchpad_tiles,
+            qactions::press_launchpad_tile,
+            qactions::launchpad_warnings,
             qactions::quick_action_state,
             qactions::quick_action_apply,
             qactions::quick_action_apply_item,

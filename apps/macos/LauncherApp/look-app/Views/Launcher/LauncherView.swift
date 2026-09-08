@@ -137,9 +137,9 @@ struct LauncherView: View {
     @State var activeCommandID: String?
     @State var commandFeedback = ""
     @State var keyboardMonitor = KeyboardSelectionMonitor()
-    /// Empty-state launchpad: the decoded tile layout (from the shared catalog)
-    /// and the controller holding its interactive state.
-    @State var launchpadTiles: [LaunchpadTileModel] = []
+    /// Empty-state launchpad: the decoded payload (tiles plus the shape the
+    /// drawing declared) and the controller holding its interactive state.
+    @State var launchpadLayout: LaunchpadLayout = .empty
     @State var launchpadController = LaunchpadController()
     @State var speedTest = SpeedTestController()
     @State var searchTask: Task<Void, Never>?
@@ -167,6 +167,10 @@ struct LauncherView: View {
     @State var appearanceRevealToken: UInt64 = 0
     @State var lookupDefinition: LookupDefinition?
     @State var pidToRestoreOnHide: pid_t?
+    /// Read at launch and on config reload, so the show path never touches the
+    /// filesystem.
+    @State var lastHiddenAt: Date?
+    @State var queryRetentionSeconds = AppConstants.Launcher.QueryRetention.defaultSeconds
     @StateObject var runningAppsService = RunningAppsService()
     @StateObject var processModel = ProcessFinderModel()
 
@@ -184,17 +188,17 @@ struct LauncherView: View {
     /// Legibility floor for surfaces that float on the bare desktop while the
     /// material is Liquid Glass. Tune here: too low and light theme text
     /// disappears over a white window, too high and the refraction is lost.
-    /// Resting corner for a tile that floats free of its neighbours, and for the
-    /// seated variant that reads as part of one box. Both are scaled by the
-    /// active theme surface (Liquid rounds harder) at each use.
     /// First position in the spawn cascade, ahead of the launchpad grid.
     static let searchBarRevealIndex = 0
-    static let floatingTileCornerRadius: CGFloat = 12
-    static let seatedTileCornerRadius: CGFloat = 10
     /// Shorter than the stored title: a banner shares its line with the undo
     /// hint, and the pill is meant to read at a glance.
     static let bannerTitleLimit = 32
     static let attachedPanelScrimOpacity = 0.16
+
+    /// How many shortcuts a hint line may name. Three is what fits the narrowest
+    /// card footer in one row, and is the budget linows keeps too.
+    static let hintItemBudget = 3
+    static let hintSeparator = "  •  "
 
     var runningAppsPlacement: RunningAppsPlacement {
         themeStore.settings.runningAppsPlacement
@@ -579,7 +583,7 @@ struct LauncherView: View {
 
         switch command {
         case .network:
-            return "Press Enter after finishing input to translate on web"
+            return "Press Enter to translate"
         case .lookup:
             return nil
         }
@@ -598,17 +602,23 @@ struct LauncherView: View {
     }
 
     var currentHint: String {
-        hintItems.joined(separator: "  •  ")
+        hintItems.prefix(Self.hintItemBudget).joined(separator: Self.hintSeparator)
     }
 
+    /// What the footer says, wherever the footer is drawn. A screen that teaches
+    /// its own keys (the AI session) supplies them here rather than printing a
+    /// second hint line of its own.
+    var panelHint: String {
+        isActionSessionUI ? sessionFooterHint : currentHint
+    }
+
+    /// Every hint line is at most three items, the same budget linows keeps
+    /// (apps/linows/src/js/app.js). The footer sits inside a card, so a fourth
+    /// item wraps or truncates; the keys left out are still listed in
+    /// Settings > Shortcuts.
     var hintItems: [String] {
         if appUIState.showsThemeSettings {
-            return [
-                "Cmd+H help",
-                "Cmd+/ command mode",
-                "Cmd+Shift+, close settings",
-                "Cmd+Shift+; apply config",
-            ]
+            return ["Cmd+Shift+; apply config", "Cmd+Shift+, close settings", "Cmd+H help"]
         }
 
         if isHideAppConfirmationVisible {
@@ -622,52 +632,51 @@ struct LauncherView: View {
 
         if isCommandMode {
             if activeCommandID == AppConstants.Launcher.Command.kill {
-                return ["Y confirm", "N cancel", "Tab/\(commandSwitchHint)", "Esc back"]
+                return ["Y confirm", "N cancel", "Esc back"]
             }
             if activeCommandID == AppConstants.Launcher.Command.sys {
-                return ["Esc back", "Tab/\(commandSwitchHint)", "Cmd+/ command mode", "Cmd+Shift+, settings"]
+                return ["Tab/\(commandSwitchHint)", "Cmd+Shift+, settings", "Esc back"]
             }
             if activeCommandID == AppConstants.Launcher.Command.speed {
-                return ["R rerun", "E show IP", "Esc back", "Tab/\(commandSwitchHint)"]
+                return ["R rerun", "E show IP", "Esc back"]
             }
             if activeCommandID == AppConstants.Launcher.Command.pomo {
-                return ["Space start/pause", "R reset", "P music", "Esc back", "Tab/\(commandSwitchHint)"]
+                return ["Space start/pause", "R reset", "Esc back"]
             }
             if activeCommandID == AppConstants.Launcher.Command.todo {
-                return ["Cmd+N switch page", "Cmd+S save", commandSwitchHint, "Esc back"]
+                return ["Cmd+N switch page", "Cmd+S save", "Esc back"]
             }
-            return ["Enter run", "Tab select", commandSwitchHint, "Esc back"]
+            return ["Enter run", "Tab select", "Esc back"]
         }
 
         if let command = extractTranslationQuery(from: query.trimmingCharacters(in: .whitespacesAndNewlines)) {
             switch command {
             case .network:
-                return ["Enter translate web", "Copy per result", "Cmd+H help", "Cmd+/ command mode"]
+                return ["Enter translate web", "Copy per result", "Cmd+H help"]
             case .lookup:
-                return ["Live lookup", "Type to refine", "Cmd+H help", "Cmd+/ command mode"]
+                return ["Live lookup", "Type to refine", "Cmd+H help"]
             }
         }
 
         if showsHelpScreen {
-            return ["Cmd+H close help", "Esc hide launcher", "Cmd+/ command mode", "Enter open"]
+            return ["Enter open", "Cmd+H close help", "Esc hide launcher"]
         }
 
         if isPrefixSuggestionQuery {
-            return ["Enter pick prefix", "Up/Down move", "Esc clear", "Cmd+H help"]
+            return ["Enter pick prefix", "Up/Down move", "Esc clear"]
         }
 
         if isCommandSuggestionQuery {
-            return ["Enter run command", "Up/Down move", "Esc clear", "Cmd+H help"]
+            return ["Enter run command", "Up/Down move", "Esc clear"]
         }
 
         if isClipboardQuery {
             return ["Enter copy clip", "Cmd+D remove clip"]
         }
 
-        // Mirrors the linows ps" hint (Cmd instead of Ctrl); Enter/CPU dropped
-        // to keep it on one line.
+        // Mirrors the linows ps" hint, with Cmd for Ctrl.
         if isProcessQuery {
-            return ["Cmd+D kill", "Cmd+C copy PID"]
+            return ["Enter CPU", "Cmd+D kill", "Cmd+C copy PID"]
         }
 
         // A proposed action owns Enter: say what it will do, not "open".
@@ -681,14 +690,16 @@ struct LauncherView: View {
             return ["Down pick a row", "Cmd+Enter web search", "Esc dismiss"]
         }
 
-        // The home screen replaces the "Cmd+/ command mode" hint with a
-        // clickable today done/total quick view (see todoQuickView), so it
-        // is intentionally omitted here.
+        // The home screen spends its third slot on the clickable today
+        // done/total quick view when there is one (see todoQuickView), so help
+        // steps aside rather than pushing the line to a fourth item.
         var hints = [enterHint]
         if !isLaunchpadActive {
             hints.append(AppConstants.Launcher.ActionMenu.openHint)
         }
-        hints.append("Cmd+H help")
+        if todoQuickView == nil {
+            hints.append("Cmd+H help")
+        }
         return hints
     }
 
@@ -713,7 +724,7 @@ struct LauncherView: View {
     /// whose hint falls through to the list above), where the /todo quick
     /// view is shown in place of the command-mode hint.
     var isHomeHintScreen: Bool {
-        guard isLauncherIdle else { return false }
+        guard isLauncherIdle, !isActionSessionUI else { return false }
         return !usesOwnResultPanel
     }
 
@@ -840,7 +851,8 @@ struct LauncherView: View {
     }
 
     var body: some View {
-        let windowCornerRadius = AppConstants.Launcher.windowCornerRadius
+        // Mirrored onto the window's layers in `WindowConfigurator`.
+        let windowCornerRadius = themeStore.panelRadius
         // When floating, use a single uniform gap between the top row and the
         // columns so it matches the horizontal gap between the columns (i3 style);
         // otherwise keep the classic fixed spacing.
@@ -865,6 +877,7 @@ struct LauncherView: View {
             startKeyboardNavigationIfNeeded()
             focusActiveInput()
             refreshClipboardMonitoringMode()
+            reloadQueryRetentionPolicy()
             runningAppsService.refresh()
             actionController.pickedFilePaths = pickedFilePathsForTextOp()
         }
@@ -1023,6 +1036,15 @@ struct LauncherView: View {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .lookActivateLauncherRequested)) { _ in
+            // AppDelegate posts this after ordering the window front, where
+            // clearing would repaint a visible panel; PomoMenuBarItem posts it
+            // while still hidden, which is the moment the timeout is for. The
+            // stamp goes either way, or a later open would judge an old hide.
+            if launcherWindow()?.isVisible == true {
+                lastHiddenAt = nil
+            } else {
+                clearQueryIfRetentionExpired()
+            }
             activateLauncherModeAndFocus()
             refreshClipboardMonitoringMode()
         }
@@ -1334,6 +1356,7 @@ struct LauncherView: View {
                 if isLaunchpadActive {
                     EmptyStateLaunchpadView(
                         tiles: launchpadTiles,
+                        shape: launchpadLayout.shape,
                         controller: launchpadController,
                         themeStore: themeStore,
                         revealToken: appearanceRevealToken
@@ -1351,16 +1374,15 @@ struct LauncherView: View {
                 Spacer(minLength: 0)
             }
 
-            // The hint bar lives inside the left card only on the floating results
-            // grid; every other state (classic, translation, empty panels) keeps
-            // the full-width bar below.
-            if !showsFloatingGrid
+            // While floating, every card carries its own hint footer; only the
+            // classic (no-gap) layout keeps the full-width bar below the panel.
+            if !showsFloatingCards
                 && !hidesResultsForEmptyQuery
                 && !isKillConfirmationVisible
                 && !isDeleteConfirmationVisible
                 && !isHideAppConfirmationVisible
             {
-                HintBar(hint: currentHint, todo: todoQuickView, themeStore: themeStore)
+                HintBar(hint: panelHint, todo: todoQuickView, themeStore: themeStore)
             }
         }
     }
@@ -1556,15 +1578,15 @@ struct LauncherView: View {
 
     /// The footer keys, matched to what is actually on screen: the browse list
     /// has chords a live conversation does not, and a streaming answer can be
-    /// stopped. One line either way, so the panel height never shifts.
+    /// stopped. Reaches the screen through `panelHint`.
     var sessionFooterHint: String {
         if chat.isStreamingAnswer {
-            return "⌘. stop  ·  Esc leave  ·  ⌘Z undo"
+            return ["⌘. stop", "⌘Z undo", "Esc leave"].joined(separator: Self.hintSeparator)
         }
         if isBrowsingConversations, !filteredConversations.isEmpty {
-            return "⌘1-9 ⌘0 open  ·  ⌘D delete  ·  ⌘H help  ·  Esc leave"
+            return ["⌘1-9 ⌘0 open", "⌘D delete", "Esc leave"].joined(separator: Self.hintSeparator)
         }
-        return "⇧↵ new line  ·  Esc leave  ·  ⌘Z undo  ·  @ sets exact time"
+        return ["⇧↵ new line", "⌘Z undo", "Esc leave"].joined(separator: Self.hintSeparator)
     }
 
     /// ⌘D and ⌘⌫ delete the highlighted session (no-op when nothing is
@@ -1646,7 +1668,7 @@ struct LauncherView: View {
                                         }
                                         .padding(.horizontal, 10)
                                         .padding(.vertical, 6)
-                                        .background(themeStore.surfaceFill(0.55), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                                        .background(themeStore.surfaceFill(0.55), in: RoundedRectangle(cornerRadius: themeStore.controlRadius, style: .continuous))
                                     }
                                     .buttonStyle(.plain)
                                 }
@@ -1748,11 +1770,6 @@ struct LauncherView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-
-            Text(sessionFooterHint)
-                .font(themeStore.uiFont(size: CGFloat(themeStore.settings.fontSize - 3), weight: .regular))
-                .foregroundStyle(themeStore.mutedTextColor())
-                .padding(.horizontal, 4)
         }
         .padding(8)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -1845,7 +1862,7 @@ struct LauncherView: View {
                         .padding(10)
                         .background(
                             themeStore.accentColor().opacity(0.14),
-                            in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                            in: RoundedRectangle(cornerRadius: themeStore.barRadius, style: .continuous))
                     // What this question was asked ABOUT, kept with the turn so
                     // the transcript still says it after the bar is cleared.
                     ForEach(item.attachedPaths, id: \.self) { path in
@@ -1888,7 +1905,7 @@ struct LauncherView: View {
                 }
             }
             .padding(10)
-            .background(themeStore.surfaceFill(0.55), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .background(themeStore.surfaceFill(0.55), in: RoundedRectangle(cornerRadius: themeStore.barRadius, style: .continuous))
             // Floated into the bubble's own corner padding rather than added as
             // a row: a row reserves its full height on EVERY answer just to
             // hold one icon. Hidden mid-stream, when there is nothing whole to
@@ -1921,7 +1938,7 @@ struct LauncherView: View {
             Spacer(minLength: 0)
         }
         .padding(10)
-        .background(themeStore.surfaceFill(0.92), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .background(themeStore.surfaceFill(0.92), in: RoundedRectangle(cornerRadius: themeStore.barRadius, style: .continuous))
     }
 
     /// Stop the running generation without leaving the chat (Esc ends the whole
@@ -1950,7 +1967,7 @@ struct LauncherView: View {
                 .foregroundStyle(themeStore.mutedTextColor())
         }
         .padding(10)
-        .background(themeStore.surfaceFill(0.92), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .background(themeStore.surfaceFill(0.92), in: RoundedRectangle(cornerRadius: themeStore.barRadius, style: .continuous))
     }
 
     @ViewBuilder
@@ -2162,16 +2179,48 @@ struct LauncherView: View {
         }
     }
 
+    /// Where a card footer sits, which is what decides its insets: a grid pane
+    /// stops its content right above the footer, while a single panel already
+    /// pads its own edges and the footer only has to match them.
+    private enum CardFooterPlacement {
+        case gridPane
+        case singlePanel
+
+        var horizontal: CGFloat {
+            switch self {
+            case .gridPane: return 6
+            case .singlePanel: return 12
+            }
+        }
+
+        var top: CGFloat {
+            switch self {
+            case .gridPane: return 6
+            case .singlePanel: return 0
+            }
+        }
+
+        var bottom: CGFloat {
+            switch self {
+            case .gridPane: return 2
+            case .singlePanel: return 8
+            }
+        }
+    }
+
     /// A thin footer strip inside a floating card holding a slice of the old
     /// full-width hint bar.
     @ViewBuilder
-    private func cardFooter<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+    private func cardFooter<Content: View>(
+        placement: CardFooterPlacement = .gridPane,
+        @ViewBuilder _ content: () -> Content
+    ) -> some View {
         HStack(spacing: 0) {
             content()
         }
-        .padding(.horizontal, 6)
-        .padding(.top, 6)
-        .padding(.bottom, 2)
+        .padding(.horizontal, placement.horizontal)
+        .padding(.top, placement.top)
+        .padding(.bottom, placement.bottom)
     }
 
     /// i3-style inner gap between the three home panes (0 = classic flat layout).
@@ -2190,16 +2239,6 @@ struct LauncherView: View {
     /// in) churned NSVisualEffectViews on the main thread and froze typing.
     private var showsFloatingCards: Bool {
         usesPanes && isLauncherIdle
-    }
-
-    /// True when the floating content is the two-card grid (results or clipboard
-    /// empty) that carries its hint + copyright inside the cards. Translation and
-    /// the recent-empty state float as a single card and keep the bottom bar.
-    /// Only gates a `Text`, so it may read live state.
-    private var showsFloatingGrid: Bool {
-        showsFloatingCards
-            && !isTranslationQuery
-            && !(isRecentQuery && displayedResults.isEmpty)
     }
 
     private var isQueryEmpty: Bool {
@@ -2234,12 +2273,12 @@ struct LauncherView: View {
                 .padding(padding)
                 .background {
                     tileBackground(
-                        cornerRadius: themeStore.surfaceCornerRadius(Self.floatingTileCornerRadius),
+                        cornerRadius: themeStore.tileRadius,
                         floats: true
                     )
                 }
                 .overlay {
-                    tileBorder(cornerRadius: themeStore.surfaceCornerRadius(Self.floatingTileCornerRadius))
+                    tileBorder(cornerRadius: themeStore.tileRadius)
                 }
                 // Lift each pane off the backdrop so the three parts read as
                 // separate floating tiles rather than sections of one box.
@@ -2334,9 +2373,7 @@ struct LauncherView: View {
             .spawnReveal(index: Self.searchBarRevealIndex, token: appearanceRevealToken, scales: false)
             .background {
                 tileBackground(
-                    cornerRadius: themeStore.surfaceCornerRadius(
-                        floats ? Self.floatingTileCornerRadius : Self.seatedTileCornerRadius
-                    ),
+                    cornerRadius: floats ? themeStore.tileRadius : themeStore.barRadius,
                     floats: floats,
                     // Seated, the panel's backdrop already backs the bar.
                     substrate: floats
@@ -2344,22 +2381,31 @@ struct LauncherView: View {
             }
             .overlay {
                 if floats {
-                    tileBorder(cornerRadius: themeStore.surfaceCornerRadius(Self.floatingTileCornerRadius))
+                    tileBorder(cornerRadius: themeStore.tileRadius)
                 }
             }
             .shadow(color: floats ? .black.opacity(0.25) : .clear,
                     radius: floats ? 7 : 0, x: 0, y: floats ? 3 : 0)
     }
 
-    /// Wraps a single-panel home state (translation, clipboard/recent empty) in a
-    /// frosted floating card when floating, so it keeps a background once the
-    /// window backdrop is removed. A no-op otherwise.
+    /// Wraps a single-panel home state (translation, AI session, recent empty) in
+    /// a frosted floating card when floating, so it keeps a background once the
+    /// window backdrop is removed. The card carries the hint and copyright footer
+    /// itself, like the two-card grid does, so nothing is left stranded on the
+    /// desktop below it. A no-op otherwise.
     @ViewBuilder
     private func floatingPanel<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
         if showsFloatingCards {
             paneCard(padding: 0) {
-                content()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                VStack(alignment: .leading, spacing: 0) {
+                    content()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    cardFooter(placement: .singlePanel) {
+                        HintBar(hint: panelHint, todo: todoQuickView, themeStore: themeStore)
+                        Spacer(minLength: 8)
+                        copyrightLink
+                    }
+                }
             }
         } else {
             content()
@@ -2425,10 +2471,10 @@ struct LauncherView: View {
 
     @ViewBuilder
     private var copyrightOverlay: some View {
-        // On the floating results grid the copyright moves into the right-hand
-        // card footer; on the empty-rest screen it's hidden entirely; otherwise it
-        // stays in the panel's bottom-right corner.
-        if !showsFloatingGrid && !hidesResultsForEmptyQuery && !isHideAppConfirmationVisible {
+        // While floating the copyright moves into a card footer; on the empty-rest
+        // screen it's hidden entirely; otherwise it stays in the panel's
+        // bottom-right corner.
+        if !showsFloatingCards && !hidesResultsForEmptyQuery && !isHideAppConfirmationVisible {
             copyrightLink
                 .padding(.trailing, 10)
                 .padding(.bottom, 8)

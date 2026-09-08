@@ -208,6 +208,22 @@ private func look_qactions_json(_ resultID: UnsafePointer<CChar>?, _ kind: Unsaf
 nonisolated
 private func look_quick_actions_launchpad_json() -> UnsafeMutablePointer<CChar>?
 
+@_silgen_name("look_launchpad_warnings_json")
+nonisolated
+private func look_launchpad_warnings_json() -> UnsafeMutablePointer<CChar>?
+
+@_silgen_name("look_launchpad_tile_values_json")
+nonisolated
+private func look_launchpad_tile_values_json() -> UnsafeMutablePointer<CChar>?
+
+@_silgen_name("look_launchpad_refresh_tiles_json")
+nonisolated
+private func look_launchpad_refresh_tiles_json() -> UnsafeMutablePointer<CChar>?
+
+@_silgen_name("look_launchpad_press_tile_json")
+nonisolated
+private func look_launchpad_press_tile_json(_ name: UnsafePointer<CChar>?) -> UnsafeMutablePointer<CChar>?
+
 @_silgen_name("look_definitional_entity_json")
 nonisolated
 private func look_definitional_entity_json(_ query: UnsafePointer<CChar>?) -> UnsafeMutablePointer<CChar>?
@@ -991,7 +1007,8 @@ final class EngineBridge: @unchecked Sendable {
     }
 
     /// The user-declared block a row belongs to, with the exact steps Enter will
-    /// perform. Reads the sources directory, so call it off the main thread.
+    /// perform, and the actions declared for rows like it. Reads the sources
+    /// directory, so call it off the main thread.
     nonisolated func sourceBlock(
         candidateID: String, row: RowRef, ancestorsJSON: String = "[]"
     ) -> SourceBlock? {
@@ -1253,16 +1270,56 @@ final class EngineBridge: @unchecked Sendable {
         return (try? decoder.decode([QuickActionDescriptor].self, from: data)) ?? []
     }
 
-    /// The empty-state launchpad layout from the shared `look_qactions` catalog:
-    /// fixed tile order, sizes, and mnemonics. Pure catalog lookup, cheap. Empty
-    /// only on an unexpected decode failure.
-    nonisolated func launchpadLayout() -> [LaunchpadTileModel] {
-        guard let ptr = look_quick_actions_launchpad_json() else { return [] }
+    /// The empty-state launchpad layout: the user's `~/.look/super-actions.toml`
+    /// when they have a usable one, else the shared catalog's default. Every
+    /// tile arrives knowing the cell it occupies. Reads a small file, so it is
+    /// cheap but not free - call it on a reload, not per frame. Empty only on
+    /// an unexpected decode failure.
+    nonisolated func launchpadLayout() -> LaunchpadLayout {
+        guard let ptr = look_quick_actions_launchpad_json() else { return .empty }
         defer { look_free_cstring(ptr) }
-        guard let data = String(cString: ptr).data(using: .utf8) else { return [] }
+        guard let data = String(cString: ptr).data(using: .utf8) else { return .empty }
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
-        return (try? decoder.decode([LaunchpadTileModel].self, from: data)) ?? []
+        return (try? decoder.decode(LaunchpadLayout.self, from: data)) ?? .empty
+    }
+
+    /// What each user tile shows. Reads a cache; runs nothing.
+    nonisolated func launchpadTileValues() -> [String: LaunchpadTileValue] {
+        guard let ptr = look_launchpad_tile_values_json() else { return [:] }
+        defer { look_free_cstring(ptr) }
+        guard let data = String(cString: ptr).data(using: .utf8) else { return [:] }
+        return (try? JSONDecoder().decode([String: LaunchpadTileValue].self, from: data)) ?? [:]
+    }
+
+    /// Spawns and blocks: never on the main thread.
+    nonisolated func refreshLaunchpadTiles() -> LaunchpadTileRefresh {
+        guard let ptr = look_launchpad_refresh_tiles_json() else { return .init() }
+        defer { look_free_cstring(ptr) }
+        guard let data = String(cString: ptr).data(using: .utf8) else { return .init() }
+        return (try? JSONDecoder().decode(LaunchpadTileRefresh.self, from: data)) ?? .init()
+    }
+
+    /// Runs a user tile's `press`.
+    nonisolated func pressLaunchpadTile(_ name: String) -> String? {
+        let ptr = name.withCString { look_launchpad_press_tile_json($0) }
+        guard let ptr else { return "the core did not answer" }
+        defer { look_free_cstring(ptr) }
+        guard let data = String(cString: ptr).data(using: .utf8) else { return nil }
+        struct PressResult: Decodable { let error: String? }
+        return (try? JSONDecoder().decode(PressResult.self, from: data))?.error
+    }
+
+    /// What is wrong with the user's `super-actions.toml`, empty when nothing is.
+    ///
+    /// The core prints these to stderr, which is invisible to anyone who did
+    /// not launch Look from a terminal - and this is the one config edited by
+    /// people who then immediately look at the window to see what it did.
+    nonisolated func launchpadWarnings() -> [String] {
+        guard let ptr = look_launchpad_warnings_json() else { return [] }
+        defer { look_free_cstring(ptr) }
+        guard let data = String(cString: ptr).data(using: .utf8) else { return [] }
+        return (try? JSONDecoder().decode([String].self, from: data)) ?? []
     }
 
     /// The entity from a definitional query ("what is vim" -> "vim"), or nil.
@@ -1416,6 +1473,11 @@ nonisolated struct SourceBlock: Decodable {
     let file: String?
     /// Where a row of this block can go next.
     let then: [SourceBlockTarget]
+    /// Actions a user declared for rows LIKE this one (`applies`) rather than
+    /// for rows of this block. Apart from `then` because the two land
+    /// differently in the menu: a block's own targets replace the built-in
+    /// verbs, while these join them.
+    let globals: [SourceBlockTarget]
     /// Whether a `preview` command will run, known before it does.
     let hasPreview: Bool
 }

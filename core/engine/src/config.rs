@@ -153,6 +153,12 @@ impl RuntimeConfig {
             config.apply_from_file(&path);
             config.ensure_default_file_scan_roots_present();
         }
+        // The launchpad layout is its own file and no part of RuntimeConfig,
+        // but this is the first-run hook. Seeding it here means a fresh install
+        // has a commented super-actions.toml sitting beside the config before the
+        // launcher is ever opened, which is what makes the layout editable
+        // without a docs page to find first.
+        crate::launchpad::ensure_default_file();
         config
     }
 
@@ -462,6 +468,10 @@ skip_dir_names=node_modules,target,build,dist,library,applications,old firefox d
 \n\
 # Clipboard history size (10-100). Out-of-range values fall back to 10.\n\
 clipboard_history_limit=10\n\
+\n\
+# How long the main query survives while Look is hidden, in seconds. 0 clears\n\
+# it on every hide; a negative value keeps it indefinitely.\n\
+query_retention_seconds=5\n\
 \n\
 # Preferred tools. Name the tool, not a command: Look knows how to drive it,\n\
 # including running a terminal editor inside your terminal. Declare nothing and\n\
@@ -1490,6 +1500,7 @@ mod tests {
         assert!(contents.contains("app_scan_depth=9"));
         assert!(contents.contains("app_scan_roots=/Applications\n"));
         assert!(contents.contains("alias_note=Notion|Obsidian|Notes|Apple Notes|Bear|Logseq"));
+        assert!(contents.contains("query_retention_seconds=5"));
         assert_eq!(
             contents.matches("app_scan_depth=").count(),
             1,

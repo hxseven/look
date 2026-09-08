@@ -52,29 +52,58 @@
     --syntax-number: #8cc7d6;
 
     /* Typography */
-    --font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
-    --font-mono: "SF Mono", "Cascadia Code", "JetBrains Mono", monospace;
-    --font-size: 14px;
+    /* One designed pair per platform, as macOS gets SF Pro with SF Mono. The
+     * Linux names are explicit because `system-ui` and `monospace` both answer
+     * DejaVu here, and DejaVu Sans Mono is a size larger to the eye than the
+     * sans beside it. */
+    --font-family: -apple-system, "Segoe UI", "Adwaita Sans", Cantarell, system-ui, sans-serif;
+    --font-mono:
+        "SF Mono", "Cascadia Code", "JetBrains Mono", "Adwaita Mono", "Noto Sans Mono",
+        "Liberation Mono", monospace;
+    /* The slider value. `--font-size` is this times the Ctrl+= zoom, set by
+     * screens/settings.js; anything that should not zoom reads the base. */
+    --font-size-base: 14px;
+    --font-size: var(--font-size-base);
+    --font-mono-size: calc(var(--font-size-base) - 2px);
 
     /* Spacing */
     --content-padding: 14px;
-    --row-height: 38px;
+    /* The row gutter, split as macOS splits it: card inset plus row padding. */
+    --row-inset: 6px;
+    --row-padding-x: 10px;
+    /* Two text lines, so a row without a context line is no shorter. */
+    --row-height: 48px;
     --row-spacing: 4px;
     --icon-size: 22px;
     --input-padding-x: 12px;
-    --input-padding-y: 8px;
+    --input-padding-y: 10px;
     /* Shared by the icon, the flex gap and the placeholder overlay. */
     --search-icon-size: 16px;
+    /* Top row content height: field and running-apps icons both measure to it,
+     * so the bar is the same height with the strip on or off. */
+    --top-row-height: 26px;
     --search-gap: 10px;
+    /* The label column every preview info row shares. */
+    --preview-label-col: 96px;
+
+    /* A declared row's icon tile, worn by the list row and the preview header. */
+    --declared-fill: color-mix(in srgb, var(--accent-color) 16%, transparent);
+    --declared-ring: color-mix(in srgb, var(--accent-color) 32%, transparent);
 
     /* Every themed radius goes through the surface scale (macOS
-     * ThemeStore.surfaceCornerRadius); one that skips it desyncs from the fill
-     * behind it. */
-    --surface-radius-scale: 1;
-    --corner-radius: 0;
-    --control-radius: calc(8px * var(--surface-radius-scale));
+     * AppConstants.Radius, scaled by ThemeStore.surfaceCornerRadius); one that
+     * skips it desyncs from the fill behind it. A radius that follows an
+     * element's geometry - an icon mask, a pill, a progress bar - is not one of
+     * these and stays in px. */
+    --surface-radius-scale: 1.5;
+    --panel-radius: calc(16px * var(--surface-radius-scale));
     --tile-radius: calc(12px * var(--surface-radius-scale));
     --bar-radius: calc(10px * var(--surface-radius-scale));
+    --control-radius: calc(8px * var(--surface-radius-scale));
+    --chip-radius: calc(6px * var(--surface-radius-scale));
+    --micro-radius: calc(4px * var(--surface-radius-scale));
+    /* Square until the environment is known to composite; see below. */
+    --corner-radius: 0;
 
     /* Floating "inner-gap" layout (0 = classic framed panel) */
     --inner-gap: 0px;
@@ -219,5 +248,5 @@
 /* Transparency-capable environments (macOS, Windows, Wayland, X11 with compositor) */
 [data-transparent="true"] {
     --bg-tint: rgba(30, 30, 46, 0.95);
-    --corner-radius: calc(16px * var(--surface-radius-scale));
+    --corner-radius: var(--panel-radius);
 }

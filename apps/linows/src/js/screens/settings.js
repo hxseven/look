@@ -14,6 +14,7 @@ import * as banner from '../components/banner.js';
 import * as sourceblocks from '../components/sourceblocks.js';
 import * as platform from '../platform.js';
 import * as layout from '../layout.js';
+import * as superactions from '../components/superactions.js';
 
 let screen = null;
 let active = false;
@@ -56,6 +57,9 @@ function clampUiScale(v) {
 function applyFontSize() {
     const px = Math.round(baseFontSizePx * uiScale);
     document.documentElement.style.setProperty('--font-size', px + 'px');
+    // The slider without the zoom. Code previews size off this, so Ctrl+= grows
+    // the launcher without reflowing the file you are looking at, as on macOS.
+    document.documentElement.style.setProperty('--font-size-base', baseFontSizePx + 'px');
 }
 
 applyFontSize();
@@ -111,6 +115,9 @@ const CSS_MAP = {
     ui_border_opacity: applyBorderColor,
     // Same key as macOS ThemeSettings.innerGap; layout.js clamps to 0-24.
     inner_gap: (v) => layout.setInnerGap(parseFloat(v)),
+    ui_surface_radius: (v) => {
+        document.documentElement.style.setProperty('--surface-radius-scale', v);
+    },
 };
 
 function markCustomTheme() {
@@ -405,21 +412,24 @@ export function init(exitFn) {
         saveConfig({ backend_log_level: item.dataset.value });
     });
 
-    // Launch at login
-    document.getElementById('settings-arch-disable-gpu').addEventListener('change', (e) => {
-        saveConfig({ arch_disable_gpu: e.target.checked ? 'true' : 'false' });
+    // Rendering workarounds
+    document.getElementById('settings-disable-gpu').addEventListener('change', (e) => {
+        saveConfig({ disable_gpu_compositing: e.target.checked ? 'true' : 'false' });
     });
 
-    document.getElementById('settings-arch-disable-blur').addEventListener('change', (e) => {
+    document.getElementById('settings-disable-blur').addEventListener('change', (e) => {
         const on = e.target.checked;
         if (on) {
             document.documentElement.setAttribute('data-disable-blur', '');
         } else if (!platform.blurForcedOff()) {
             document.documentElement.removeAttribute('data-disable-blur');
         }
-        saveConfig({ arch_disable_blur: on ? 'true' : 'false' });
+        saveConfig({ disable_blur_effect: on ? 'true' : 'false' });
         applytint();
         updateInnerGapAvailability();
+        updateSuperActionsAvailability();
+        superactions.invalidate();
+        superactions.refreshAvailability();
         layout.refresh();
     });
 
@@ -631,6 +641,9 @@ export function isActive() {
 export async function reloadFromFile() {
     try {
         await sourceblocks.reload();
+        // The launchpad drawing is cached for the process for the same reason
+        // the source blocks are, so this is where an edited one starts showing.
+        const launchpadWarnings = await superactions.reload();
         const map = await loadConfigMap();
 
         // Background image - apply BEFORE the tint pass: effectiveBlurOpacity
@@ -662,8 +675,9 @@ export async function reloadFromFile() {
         // Border thickness
         if (map.ui_border_thickness) CSS_MAP.ui_border_thickness(map.ui_border_thickness);
 
-        // Floating layout gap
+        // Floating layout gap + corner rounding
         CSS_MAP.inner_gap(map.inner_gap || 0);
+        if (map.ui_surface_radius) CSS_MAP.ui_surface_radius(map.ui_surface_radius);
 
         // If settings screen is open, refresh the UI sliders too
         if (active) await loadConfig();
@@ -672,7 +686,11 @@ export async function reloadFromFile() {
         await forceIndexRefresh();
 
         if (onConfigReloadFn) onConfigReloadFn(map);
-        banner.show('Config reloaded from file', 'success', 1.2);
+        // One banner carries both: super-actions.toml is the file most likely to be
+        // mid-edit when someone reaches for the reload chord.
+        if (!superactions.warningBanner(launchpadWarnings)) {
+            banner.show('Config reloaded from file', 'success', 1.2);
+        }
     } catch {
         banner.show('Reload failed', 'error', 1.5);
     }
@@ -729,9 +747,9 @@ export async function restoreOnStartup() {
     try {
         const map = await loadConfigMap();
 
-        // Apply Arch blur-disable BEFORE first tint pass so initial render is
+        // Apply the blur-disable BEFORE first tint pass so initial render is
         // already opaque if the user toggled it.
-        if (map.arch_disable_blur === 'true') {
+        if (disableBlurSet(map)) {
             document.documentElement.setAttribute('data-disable-blur', '');
         }
 
@@ -771,8 +789,9 @@ export async function restoreOnStartup() {
             CSS_MAP.ui_border_thickness(map.ui_border_thickness);
         }
 
-        // Floating layout gap
+        // Floating layout gap + corner rounding
         CSS_MAP.inner_gap(map.inner_gap || 0);
+        if (map.ui_surface_radius) CSS_MAP.ui_surface_radius(map.ui_surface_radius);
     } catch {
         // Config may not exist yet
     }
@@ -827,6 +846,18 @@ async function loadConfigMap() {
     return map;
 }
 
+// Config keys renamed out of their `arch_` prefix once the ghosting turned out
+// to be a WebKitGTK trait rather than an Arch one. The old name is read when
+// the new one is absent, so an existing config keeps its setting; saving writes
+// the new name.
+function boolKey(map, key, legacyKey) {
+    return (map[key] ?? map[legacyKey]) === 'true';
+}
+
+function disableBlurSet(map) {
+    return boolKey(map, 'disable_blur_effect', 'arch_disable_blur');
+}
+
 // Environments that can't render the floating layout (see
 // platform.floatingSupported) get the slider disabled; the config value is
 // preserved so it applies again on a capable setup.
@@ -838,10 +869,24 @@ function updateInnerGapAvailability() {
     row.classList.toggle('settings-row-disabled', !ok);
 }
 
+// Same gate, same deal for the launchpad: where it can't render, the empty home
+// screen shows the results list instead and the toggle is inert until that
+// changes. It shares a row with Running Apps, so only its own label and switch
+// dim.
+function updateSuperActionsAvailability() {
+    const input = document.getElementById('settings-super-actions');
+    if (!input) return;
+    const ok = platform.floatingSupported();
+    input.disabled = !ok;
+    input.closest('.settings-toggle')?.classList.toggle('settings-row-disabled', !ok);
+    document
+        .getElementById('settings-super-actions-label')
+        ?.classList.toggle('settings-row-disabled', !ok);
+}
+
 async function loadConfig() {
     try {
         const cfg = await getConfig();
-        updateInnerGapAvailability();
 
         const map = {};
         for (const entry of cfg.entries) map[entry.key] = entry.value;
@@ -920,15 +965,23 @@ async function loadConfig() {
         document.getElementById('settings-super-actions').checked =
             map.super_actions_enabled !== 'false';
         document.getElementById('settings-ai-enabled').checked = map.ai_enabled !== 'false';
-        document.getElementById('settings-arch-disable-gpu').checked =
-            map.arch_disable_gpu === 'true';
-        document.getElementById('settings-arch-disable-blur').checked =
-            map.arch_disable_blur === 'true';
-        if (map.arch_disable_blur === 'true') {
+        document.getElementById('settings-disable-gpu').checked = boolKey(
+            map,
+            'disable_gpu_compositing',
+            'arch_disable_gpu',
+        );
+        document.getElementById('settings-disable-blur').checked = disableBlurSet(map);
+        if (disableBlurSet(map)) {
             document.documentElement.setAttribute('data-disable-blur', '');
         } else if (!platform.blurForcedOff()) {
             document.documentElement.removeAttribute('data-disable-blur');
         }
+
+        // After the blur attribute above: both read floatingSupported, which
+        // depends on it, so a reset or a reload that changes blur would leave
+        // them describing the previous state.
+        updateInnerGapAvailability();
+        updateSuperActionsAvailability();
 
         // Dir lists
         configCache.file_scan_extra_roots = map.file_scan_extra_roots || '';
@@ -1143,6 +1196,7 @@ const USER_CONTROLLED_KEYS = new Set([
     'ui_font_opacity',
     'ui_border_opacity',
     'ui_border_thickness',
+    'ui_surface_radius',
 ]);
 
 // applyThemePreset skips these keys and then reads them back off the sliders,
@@ -1223,7 +1277,8 @@ function getSliderVal(key) {
     return parseFloat(row.querySelector('.settings-slider')?.value || 0);
 }
 
-// Stacks where WebKitGTK ghost-renders backdrop-filter, so the CSS drops it.
+// Stacks where WebKitGTK ghost-renders composited layers, so the CSS drops what
+// filters are left and applytint() stops leaning on translucency.
 function isGhostingStack() {
     return platform.compositor() === 'hyprland';
 }
@@ -1256,9 +1311,10 @@ function applytint() {
         document.documentElement.style.setProperty('--bg-tint', `rgb(${r}, ${g}, ${b})`);
         return;
     }
-    // Hyprland (auto) and Arch toggle (manual): backdrop-filter is disabled
-    // (CSS) due to WebKitGTK ghosting. Force a near-opaque alpha so themes
-    // still pick the color while the window stays readable without blur.
+    // Hyprland (auto) and Arch toggle (manual): the stacks WebKitGTK ghosts on.
+    // The window's own backdrop-filter is gone on Linux either way (layout.css);
+    // this is the extra safety net, a near-opaque alpha so themes still pick the
+    // color while the window stays readable on a stack that renders it badly.
     // Unless the compositor blurs behind the window - then readability is not
     // ours to defend, and the floor would hide the frost we just asked for.
     if (!platform.compositorBlur() && (isGhostingStack() || hasDisableBlur())) {

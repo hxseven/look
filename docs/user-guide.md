@@ -14,6 +14,7 @@
 > | `Cmd+0`                                 | `Ctrl+0`          |
 > | `Cmd+1`…`Cmd+7` (command mode)          | `Ctrl+1`…`Ctrl+7` |
 > | `Cmd+1`…`Cmd+9` (running-apps switcher) | `Alt+1`…`Alt+9`   |
+> | `Cmd+<letter>` (super-action tiles)     | `Alt+<letter>`    |
 > | `Cmd+P`                                 | `Ctrl+P`          |
 > | `Cmd+Shift+P`                           | `Ctrl+Shift+P`    |
 > | `Cmd+Shift+,`                           | `Ctrl+Shift+,`    |
@@ -141,6 +142,105 @@ Restart and Shut Down arm on the first press and only run on the second, so a st
 The rest of the strip is read-only: **Battery**, **Weather**, and the large slot on the left, which shows a running Pomodoro session, otherwise today's remaining todos, otherwise the clock.
 
 Turn the strip off in `Settings > Appearance > Super Actions`. Off hides it and disables the letter shortcuts. Saved as `super_actions_enabled=true|false` in `~/.look/config`.
+
+### Rearranging the strip
+
+The arrangement is yours, in `~/.look/super-actions.toml`. Look writes it on first run with the layout above, so the file is its own reference - open it and the format explains itself.
+
+Ready-made tiles to paste in: [lookbook's `tiles/`](https://github.com/kunkka19xx/lookbook/tree/main/tiles), which is also the place to share one you wrote.
+
+It is a drawing of the screen. Each line is a row, each name is one cell:
+
+```toml
+layout = [
+    "lslot       lslot       bluetooth   wifi        battery     weather",
+    "lslot       lslot       theme       keepawake   screensaver weather",
+    "mic         restart     shutdown    nowplaying  nowplaying  nowplaying",
+]
+```
+
+Four edits, one mechanism:
+
+- **Hide** a tile by deleting its name. Nothing closes up behind it - you get a gap where it was, because you removed it.
+- **Move** one by putting its name somewhere else.
+- **Resize** one by repeating its name across more cells. `weather` above stands two rows tall because it appears in both. A tile's cells must form a rectangle.
+- **Leave a gap** on purpose with `.`.
+
+Three tiles need room to say anything, so they have a floor, in columns x rows: the big left slot 2x2, `weather` 1x2, `nowplaying` 2x1. Every other tile fits in one cell. Drawn smaller, a tile would be clipped rather than shrunk, so Look leaves it out and says which one. The seeded file lists each minimum beside its key.
+
+There is no column or row count to declare: the drawing is the count. Every row needs the same number of names, and there is a ceiling of five rows and six columns.
+
+The names are the tile ids - `lslot`, `bluetooth`, `wifi`, `battery`, `theme`, `keepawake`, `screensaver`, `weather`, `mic`, `restart`, `shutdown`, `nowplaying` - and the seeded file lists them with what each one does.
+
+`Cmd+Shift+;` reloads the file, so you can arrange the strip while looking at it. **Delete the file to go back to the default.**
+
+If the drawing is wrong, Look says so in the window rather than failing quietly. A problem with one tile drops that tile and keeps the rest; a problem with the file's structure - a row with the wrong number of names, or TOML it cannot read - falls back to the whole default layout, so the strip is never empty and never silent about why.
+
+### Tiles of your own
+
+A tile of your own is a name in the drawing plus an entry below it. Nothing changes in `~/.look/sources/` - a tile is declared whole, in this one file, and needs no source at all.
+
+```toml
+layout = [
+    "lslot   lslot   disk    weather",
+    "lslot   lslot   lock    weather",
+]
+
+[tiles.disk]
+value   = '''printf '{"value":"%s","caption":"DISK FREE","icon":"internaldrive","lines":["of %s"]}' "$(df -h / | awk 'NR==2 {print $4}')" "$(df -h / | awk 'NR==2 {print $2}')"'''
+refresh = "5m"
+
+# A tile that only ACTS. No `value`, so nothing runs until you press it and
+# there is nothing to display - it draws like Mic and Screensaver do.
+#
+# `pmset displaysleepnow` sleeps the display, which locks the Mac when
+# System Settings > Lock Screen is set to ask for a password after sleep.
+
+[tiles.lock]
+press    = "pmset displaysleepnow"
+title    = "Lock"
+confirm  = "Lock the screen?"
+icon     = "lock.fill"
+mnemonic = "L"   # Cmd+L (Alt+L elsewhere), and the L in "Lock" is highlighted
+```
+
+**`value` prints one JSON object.** Only `value` is required, so a shell one-liner is a whole tile:
+
+```json
+{"value": "84Gi"}
+```
+
+A tile drawn bigger than one cell can say as much as Weather does:
+
+```json
+{"value":   "84Gi",
+ "caption": "DISK FREE",
+ "lines":   ["of 460Gi"],
+ "icon":    "internaldrive",
+ "state":   "off"}
+```
+
+Printing nothing hides the tile - that is how a "next meeting" tile disappears on a day with no meetings.
+
+**`icon` names the symbol drawn on the tile.** A tile that only acts runs no command, so there is no JSON for an icon to arrive in and this key is its only way to be anything but the generic mark. A tile with a `value` can use either, and an icon in the printed JSON wins, since that one can change with what was read.
+
+On macOS the name is an SF Symbol, so anything in that set works (`lock.fill`, `internaldrive`, `calendar`).
+
+On Linux the name is either one of the strip's own glyphs - `bluetooth`, `wifi`, `theme`, `keepawake`, `battery`, `screensaver`, `mic`, `restart`, `shutdown` - or a path to an image of your own:
+
+```toml
+icon = "~/.look/icons/nixos.svg"
+```
+
+The file is read when the strip resolves its layout and drawn as a mask, so it takes the tile's colour like every other glyph rather than arriving in its own, and follows the active tint when a reading says `"state": "on"`. SVG, PNG, and the other formats an icon theme uses all work, up to 256 KB. Because it is a mask, only the shape survives: a flat silhouette reads at 16px, a detailed illustration collapses into a blob. Windows draws from the built-in names only.
+
+An unrecognised name draws nothing at all rather than a placeholder, so a tile with a typo in its `icon` looks like a tile that asked for none.
+
+**`press` is what a click or the tile's key runs.** A tile with `press` and no `value` is a button: it shows its name and never runs anything until you press it. A tile with `value` and no `press` is a readout. `confirm` arms the tile on the first press and fires on the second, the way Restart and Shut Down do.
+
+**Keep the command light.** `value` runs unattended - the point of a live tile - so it is capped: **two seconds**, then it is killed along with anything it started, and 16 KB of output. Within a tile's `refresh` window nothing runs at all, so most opens cost nothing. Read something and print it; a slow command will be cut off and the tile keeps its last good reading. Anything that needs to fetch, build, or wait belongs behind `press`, or in a script that caches to a file the tile just reads.
+
+A tile that fails says so and keeps what it last showed - one broken tile never blanks the strip. Its key follows the same rules as the built-ins: it fires with `Cmd` on macOS and `Alt` on Linux/Windows, a letter already used by a tile on the screen is not given away, `Cmd+Q` belongs to quitting Look, and either way the tile still works, it just has no key.
 
 ## AI answers and web suggestions (macOS, Linux, Windows)
 
@@ -309,6 +409,8 @@ The Appearance tab controls:
 - **Font** - name and size for launcher text
 - **Font Color** - text color (RGB + opacity)
 - **Border** - border thickness and color
+- **Inner Gap** - gap between the top row, results list and preview, `0` to `24` in the platform's own unit (points on macOS, pixels on Linux and Windows). `0` is the classic framed panel; above 0 each becomes its own floating card. Fresh configs ship `7`, and an absent key means 0. Saved as `inner_gap`
+- **Corner Radius** - one multiplier on the resting corner rounding of every surface at once: the window, the top bar, the super-action tiles, the controls. Range `0` to `2.5`, default `1.5`; `0` is square. Saved as `ui_surface_radius`. One setting rather than one per surface, so they cannot disagree with each other
 
 Built-in theme presets are available:
 
@@ -376,7 +478,7 @@ Behavior:
 
 Saved as `running_apps_placement=<value>` in `~/.look/config` (`none` = off, any other value = on; legacy `top`/`right`/`bottom` values still load as "on"). New keys are auto-appended to existing config files on next Save Config.
 
-**Super Actions**: a switch that shows the control strip on the empty home screen. Off hides it and disables its letter shortcuts. See [Super actions](#super-actions). Saved as `super_actions_enabled=true|false`.
+**Super Actions**: a switch that shows the control strip on the empty home screen. Off hides it and disables its letter shortcuts. See [Super actions](#super-actions). Saved as `super_actions_enabled=true|false`. Which tiles are on the strip, and where, is not a setting - it is the drawing in `~/.look/super-actions.toml`; see [Rearranging the strip](#rearranging-the-strip).
 
 ### Indexing Settings
 
@@ -464,6 +566,7 @@ File-only settings (no Settings UI):
 These keys have no control in the Settings screens. Edit `~/.look/config` directly, then reload with `Cmd+Shift+;` (macOS) or `Ctrl+Shift+;` (Linux/Windows), or restart Look. Out-of-range or unparseable values fall back to the listed default. More keys will be added here over time.
 
 - `clipboard_history_limit` (clipboard history size, range 10 to 100, default 10)
+- `query_retention_seconds` (how long the main query survives while Look is hidden, in seconds; the first open past it returns to the empty home screen; default 5, `0` clears on every hide, and any negative value keeps the query indefinitely)
 - `text_editor`, `code_editor`, `terminal`, `file_manager` (the tools `Cmd+E` / `Cmd+T` / `Cmd+F` act through, see [Preferred tools](#preferred-tools); undeclared means the system default)
 
 - `ignored_patterns_<group>` uses gitignore-style path glob syntax: `*`, `**`, `?`, `[abc]`
@@ -531,7 +634,7 @@ Note: `Settings Blur` is stored as local app UI state (UserDefaults) and is not 
 - `Cmd+D` in AI mode (`>`): delete the highlighted conversation (same as `Cmd+Delete`; undo from the banner with `Cmd+Z`)
 - `Cmd+H` in AI mode (`>`): open the help screen on its **AI** topic without leaving the conversation. `Cmd+H`, `Esc`, or typing returns to it. The help screen's topic capsules (All / Main / AI / Prefixes / Command) also switch by click
 - `Cmd+1`..`Cmd+9` and `Cmd+0` in AI mode (`>`): open the listed conversation carrying that chip (`Cmd+0` is the tenth). The running-apps row is hidden on the AI screen, so the digits mean sessions there, and `Cmd+0` opens the tenth session rather than resetting the UI scale while the list is up. The list stops at ten because a `Cmd` chord is a single keypress; older conversations are found by typing, then Tab/arrows and Enter
-- `Cmd+<letter>` (macOS) / `Alt+<letter>` (Linux, Windows): on the empty home screen, fire the super action with that highlighted letter (`B` Bluetooth, `W` Wi-Fi, `T` Theme, `K` Keep Awake, `S` Screensaver, `M` Mic, `P` play/pause, `R` Restart, `D` Shut Down), when `Super Actions` is on
+- `Cmd+<letter>` (macOS) / `Alt+<letter>` (Linux, Windows): on the empty home screen, fire the super action with that highlighted letter (`B` Bluetooth, `W` Wi-Fi, `T` Theme, `K` Keep Awake, `S` Screensaver, `M` Mic, `P` play/pause, `R` Restart, `D` Shut Down), when `Super Actions` is on. A letter belongs to its tile, so one you have taken off the strip does nothing
 - `Space` / `R` / `P` (inside `/pomo`): start/pause session, reset, toggle music play/pause
 - `Cmd+N` / `Cmd+S` (inside `/todo`): switch Tasks/Stats page, save changes
 - `R` / `E` (inside `/speed`): run the test again, show or hide the public address
@@ -546,7 +649,7 @@ Note: `Settings Blur` is stored as local app UI state (UserDefaults) and is not 
 - `Cmd+P` / `Cmd+Shift+P`: toggle pick / clear picked set
 - `Cmd+D`: remove the selected clipboard history item; otherwise move selected file/folder (or picked items) to Trash, or empty the pinned Trash folder
 - `Cmd+Shift+,`: toggle settings panel
-- `Cmd+Shift+;` (macOS) / `Ctrl+Shift+;` (Linux, Windows): reload config, and re-read your declared sources
+- `Cmd+Shift+;` (macOS) / `Ctrl+Shift+;` (Linux, Windows): reload config, re-read your declared sources, and re-read `~/.look/super-actions.toml` so the strip can be arranged while you look at it
 - `Cmd+Shift+H`: hide the selected app from Look
 - `Cmd+-`, `Cmd+=`, `Cmd+0`: temporary UI zoom out/in/reset
 
@@ -587,10 +690,11 @@ Note: `Settings Blur` is stored as local app UI state (UserDefaults) and is not 
 
 **Linux only - ghost slider trails or overlapping popovers in Settings.**
 
-- observed on Arch GNOME 50 + webkit2gtk 2.52.3; Ubuntu 26.04 and NixOS 2.50.6 on identical webkit are unaffected, so this is a stack-interaction bug we can't auto-detect
-- open **Settings > Advanced > Arch** and flip one toggle:
-  - **Disable GPU compositing** - keeps blur, fixes the ghost. Requires restart.
-  - **Disable blur effect** - drops blur, keeps tint. Takes effect immediately.
+- not one distro's problem: reported on Arch, Ubuntu and inside VMs, while identical webkit builds elsewhere are unaffected, so it is a stack interaction we can't auto-detect
+- open **Settings > Advanced > Rendering** and flip one toggle:
+  - **Disable GPU compositing** (`disable_gpu_compositing`) - keeps blur, fixes the ghost. Requires restart.
+  - **Disable blur effect** (`disable_blur_effect`) - drops blur, keeps tint. Takes effect immediately.
+- both default off, and both are Linux-only. Configs written before the rename use `arch_disable_gpu` / `arch_disable_blur`, which are still read
 
 **I want to reset everything to defaults.**
 

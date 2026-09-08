@@ -12,8 +12,9 @@
 }
 
 .preview-icon {
-    width: 48px;
-    height: 48px;
+    --glyph-box: 48px;
+    width: var(--glyph-box);
+    height: var(--glyph-box);
     flex-shrink: 0;
     display: flex;
     align-items: center;
@@ -23,6 +24,17 @@
     font-weight: 600;
     color: var(--on-accent-color);
     background: var(--accent-color);
+}
+
+/* The tile the list gives the same rows (results.css). */
+.preview-icon-declared {
+    width: calc(var(--glyph-box) + 4px);
+    height: calc(var(--glyph-box) + 4px);
+    padding: 2px;
+    box-sizing: border-box;
+    background: var(--declared-fill);
+    box-shadow: inset 0 0 0 1px var(--declared-ring);
+    color: var(--accent-color);
 }
 
 .preview-icon img {
@@ -57,7 +69,7 @@
     text-transform: uppercase;
     letter-spacing: 0.5px;
     padding: 2px 8px;
-    border-radius: 4px;
+    border-radius: var(--micro-radius);
     background: var(--panel-fill);
 }
 
@@ -92,9 +104,16 @@
     flex-shrink: 0;
 }
 
+/* Only with something above it: an empty slot leaves the header's own margin. */
+.preview-slot:not(:empty) + .preview-meta {
+    margin-top: 14px;
+}
+
+/* Two columns, not a justified pair: at opposite edges of a 480px panel the
+ * label and its value stop reading as one fact. */
 .preview-info-row {
-    display: flex;
-    justify-content: space-between;
+    display: grid;
+    grid-template-columns: var(--preview-label-col) 1fr;
     align-items: baseline;
     padding: 5px 0;
     gap: 12px;
@@ -103,15 +122,30 @@
 .preview-info-label {
     font-size: calc(var(--font-size) - 1px);
     color: var(--font-muted);
-    flex-shrink: 0;
 }
 
 .preview-info-value {
     font-size: calc(var(--font-size) - 1px);
     color: var(--font-secondary);
-    text-align: right;
-    word-break: break-all;
     min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Flex only where a tail is protected: a flex container drops the ellipsis. */
+.preview-info-value.has-tail {
+    display: flex;
+}
+
+.preview-info-head {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.preview-info-tail {
+    flex: 0 0 auto;
 }
 
 .preview-image {
@@ -227,7 +261,7 @@
     font-weight: 600;
     color: var(--accent-color);
     background: var(--control-fill);
-    border-radius: 6px;
+    border-radius: var(--chip-radius);
 }
 
 .preview-hint-text {
@@ -301,7 +335,9 @@
 
 /* Code/text file preview */
 .preview-code {
-    --code-line-height: 1.5;
+    /* 1.35, not the 1.5 body text wants: code is short lines, and the extra
+     * leading read as gaps between them rather than as rhythm. */
+    --code-line-height: 1.35;
     /* macOS Layout.visibleStepLines / expandedStepLines: the steps are context
      * for the row when a declared `preview` shares the panel, and its subject
      * when nothing else is competing for the space. */
@@ -311,13 +347,16 @@
     --steps-copy-gutter: 28px;
     margin-top: 12px;
     background: var(--control-fill);
-    border-radius: 8px;
+    border-radius: var(--control-radius);
     overflow: hidden;
 }
 
 .preview-code-text {
     font-family: var(--font-mono);
-    font-size: calc(var(--font-size) - 1px);
+    /* A step below the row text rather than macOS's one, because no Linux mono
+     * is drawn to sit with the UI sans the way SF Mono is with SF Pro; at the
+     * same nominal size it carries visibly more ink per line. */
+    font-size: var(--font-mono-size);
     color: var(--font-secondary);
     white-space: pre-wrap;
     word-break: break-word;
@@ -358,7 +397,7 @@
 
 .preview-folder-list {
     background: var(--control-fill);
-    border-radius: 8px;
+    border-radius: var(--control-radius);
     overflow-y: auto;
     max-height: calc(100vh - 280px);
     padding: 4px;
@@ -371,7 +410,7 @@
     gap: 8px;
     padding: 6px 8px;
     cursor: pointer;
-    border-radius: 6px;
+    border-radius: var(--chip-radius);
 }
 
 .preview-folder-item:nth-child(even) {
@@ -481,7 +520,7 @@
     font-size: calc(var(--font-size) - 1px);
     font-weight: 600;
     padding: 4px 12px;
-    border-radius: 6px;
+    border-radius: var(--chip-radius);
     border: none;
     cursor: pointer;
     background: var(--color-danger);
@@ -514,7 +553,7 @@
 
 .preview-clip-card {
     background: var(--control-fill);
-    border-radius: 8px;
+    border-radius: var(--control-radius);
     padding: 10px;
     max-height: 200px;
     overflow-y: auto;
@@ -582,7 +621,7 @@
     padding: 1px 6px;
     margin: 0 2px;
     background: rgba(var(--lift), 0.12);
-    border-radius: 4px;
+    border-radius: var(--micro-radius);
 }
 
 /* Clipboard-empty "How to use" tips (pairs with the results list's
@@ -611,7 +650,7 @@
     padding: 1px 6px;
     margin: 0 2px;
     background: rgba(var(--lift), 0.12);
-    border-radius: 4px;
+    border-radius: var(--micro-radius);
 }
 
 /* ============ Quick Actions ============ */
@@ -636,7 +675,7 @@
     gap: 10px;
     padding: 8px 10px;
     background: var(--control-fill);
-    border-radius: 8px;
+    border-radius: var(--control-radius);
 }
 
 .qaction-title {
@@ -697,7 +736,7 @@
 .qaction-button {
     padding: 4px 10px;
     border: none;
-    border-radius: 6px;
+    border-radius: var(--chip-radius);
     background: var(--selection-fill);
     color: var(--font-color);
     font-size: calc(var(--font-size) - 1px);
@@ -732,7 +771,7 @@
     width: 100%;
     padding: 4px 6px;
     border: none;
-    border-radius: 6px;
+    border-radius: var(--chip-radius);
     background: none;
     color: inherit;
     font: inherit;

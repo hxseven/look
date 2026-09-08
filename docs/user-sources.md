@@ -216,6 +216,7 @@ If the command fails, times out, or prints nothing, **the rows it produced last 
 | Key | Type | Belongs to | Notes |
 | --- | --- | --- | --- |
 | `do` | list of strings | `do` | The steps, run in order |
+| `applies` | word or table | `do` | Rows this action joins even though it did not produce them. See [Actions on any row](#actions-on-any-row-applies) |
 | `dir` | string | `dir` | One root |
 | `dirs` | list of strings | `dir` | More roots. `dir` and `dirs` combine |
 | `depth` | integer | `dir` | Default `1`, immediate children |
@@ -318,6 +319,37 @@ Look at `[branches]` twice, because this is the one thing that trips people up:
 Levels stack up to five deep. If you need six, you have stopped using a launcher.
 
 A `then` target may live in another file; names are resolved after everything is loaded, so only a genuine typo is reported.
+
+## Actions on any row (`applies`)
+
+`then` gives a verb to the rows of one block. `applies` gives one to rows **anything** produced, including the files and folders Look already indexes:
+
+```toml
+[optimize]
+name    = "Optimize"
+applies = { ext = ["png"] }
+do      = ["oxipng -o4 {path}"]
+```
+
+Select any `.png` anywhere, press `Cmd+K` / `Ctrl+K`, and Optimize is there. No `[images]` block, no folder to keep the pictures in.
+
+Only a `do` block can declare it. A block that produces rows is a list, and a list is not a verb.
+
+| Written as | Matches |
+| --- | --- |
+| `applies = "files"` | any row whose path is not a directory |
+| `applies = "dirs"` | any row whose path is a directory |
+| `applies = "paths"` | any row with a path, apps included |
+| `applies = "apps"` | app rows |
+| `applies = { ext = ["png"] }` | that extension, any case, written without the dot. Files only |
+| `applies = { match = ["*.tar.gz"] }` | a glob on the file **name**, not the whole path |
+| `applies = { only = "dirs", match = ["*.xcodeproj"] }` | both at once |
+
+A row with nothing on disk (a settings pane) matches nothing, since `{path}` would be empty.
+
+**Where these land.** After the standard verbs, never in place of them: `Ctrl+E` still edits and `Ctrl+F` still reveals. A row of a block that declares `then` shows that block's own targets first, and these after.
+
+**Keep them narrow.** Every `applies = "paths"` block puts one more entry on every row in the launcher, forever. Ten per row is the ceiling; past that the rest are dropped, highest `bias` first, and the overflow is reported.
 
 ## Asking before acting (`confirm`)
 
@@ -477,8 +509,44 @@ Your rows compete with apps and files on one scale, and they earn usage history 
 
 - **`name`** is the main handle. Every one of a block's rows carries the block name in its search keywords, so typing `projects` brings up the whole block and `projects look` narrows it.
 - **`aliases`** are extra words that find the same rows: `aliases = ["repo", "code"]`.
-- **`bias`** nudges a whole block. Negative keeps a big noisy block below your apps and files; positive lifts a small block you always want first. Start at `-10` or `10`; it is a score offset, not a priority level.
+- **`bias`** nudges a whole block. Negative keeps a big noisy block below your apps and files; positive lifts a small block you always want first. It is a score offset, not a priority level, so the size that helps depends on what you are trying to beat: see [How big a bias](#how-big-a-bias).
 - **`icon`** takes an emoji (`"🚀"`), an SF Symbol name (`"hammer.fill"`, macOS), or a path to an image.
+
+### Choose a name nothing else answers to
+
+This is the one that bites quietly. `name` and `aliases` are what you type to reach a block, and they compete with everything Look already indexes: your apps, your files and folders, System Settings, your history. Claim a word your machine already uses and every search for it gets muddier. Nothing breaks and nothing is reported.
+
+```toml
+name    = "tmux sessions"     # good: two words, both distinctive
+aliases = ["tm"]              # good: short, means nothing else
+
+name    = "Files"             # an app on macOS and on GNOME
+aliases = ["code", "git"]     # an editor, and a directory half of us have
+```
+
+Two rules cover it:
+
+- **Distinctive beats short.** `notes`, `files`, `code`, `git`, `downloads` and `settings` all collide on a normal machine. `zk`, `worktrees` and `standup` collide with nothing.
+- **Two words beat one.** `"tmux sessions"` is reachable by typing either word and matches far less than `sessions` alone.
+
+An alias earns its place only by being shorter than the name *and* colliding with less, so most blocks need none.
+
+The block **id** (the `[header]`) is what you type only when `name` is omitted, since `name` defaults to it. It has to be unique inside the sources directory. Renaming one loses that block's ranking history, so pick it once and leave it.
+
+### How big a bias
+
+A block's rows match on its **name**, which is a subtitle match, while a file or page whose own title carries your word gets a title match. Those are not close:
+
+| What matched | Score |
+| --- | --- |
+| the row's own title contains your query | 1200 |
+| the row's title *starts with* your query | +200 more |
+| the row's title *is* your query | +500 more |
+| the block name (how your rows match) | 900 |
+
+So a row that happens to have your word in its title starts 300 ahead of your block, 500 ahead if its title also starts with that word, and 1000 ahead if the title is exactly it, all before recency. `10` is enough to order two blocks that both match by name; beating a title match takes several hundred.
+
+Remember that `bias` applies to **every** query, not only the one you had in mind. If a single big block is the problem, sinking that block is usually better than lifting everything else past it.
 
 ## When things refresh
 
@@ -634,6 +702,17 @@ gh run list --limit 20 --json databaseId,displayTitle,conclusion,url |
                 subtitle: .conclusion,
                 icon: (if .conclusion == "success" then "✅" else "❌" end)}'
 ```
+
+**One verb for every archive you ever download**
+
+```toml
+[unpack]
+name    = "Unpack here"
+applies = { match = ["*.tar.gz", "*.tgz", "*.tar.xz"] }
+do      = ["tar -xf {path} -C {dir}"]
+```
+
+No list to declare and nothing to keep up to date: it appears on the archive wherever the file index found it.
 
 **Search your notes and open the match**
 
