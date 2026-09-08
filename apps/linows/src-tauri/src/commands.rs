@@ -399,9 +399,9 @@ pub fn quit_app(app: tauri::AppHandle) {
 pub fn get_install_method() -> String {
     #[cfg(target_os = "windows")]
     {
-        return crate::platform::windows::update::detect_install_method()
+        crate::platform::windows::update::detect_install_method()
             .as_str()
-            .to_string();
+            .to_string()
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -414,7 +414,7 @@ pub fn get_install_method() -> String {
 pub fn start_windows_update(app: tauri::AppHandle, version: String) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        return crate::platform::windows::update::start(app, &version);
+        crate::platform::windows::update::start(app, &version)
     }
 
     #[cfg(not(target_os = "windows"))]
