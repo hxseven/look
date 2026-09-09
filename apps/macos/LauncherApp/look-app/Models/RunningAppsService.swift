@@ -24,6 +24,7 @@ final class RunningAppsService: ObservableObject {
     @Published private(set) var activePID: pid_t?
 
     private let ownPID = ProcessInfo.processInfo.processIdentifier
+    private var iconsByPID: [pid_t: NSImage] = [:]
 
     init() {
         attachNotifications()
@@ -36,12 +37,15 @@ final class RunningAppsService: ObservableObject {
             .filter { $0.activationPolicy == .regular }
             .filter { $0.processIdentifier != ownPID }
 
+        let runningPIDs = Set(running.map(\.processIdentifier))
+        iconsByPID = iconsByPID.filter { runningPIDs.contains($0.key) }
+
         let snapshot: [RunningAppItem] = running.map { app in
             RunningAppItem(
                 id: app.processIdentifier,
                 bundleIdentifier: app.bundleIdentifier,
                 name: app.localizedName ?? app.bundleIdentifier ?? "App",
-                icon: app.icon
+                icon: icon(for: app)
             )
         }
 
@@ -56,6 +60,34 @@ final class RunningAppsService: ObservableObject {
         if let frontmost, frontmost != ownPID {
             activePID = frontmost
         }
+    }
+
+    /// Freeze IconServices' lazy, multi-resolution image into owned pixels before
+    /// SwiftUI draws it. Some running-app icons render as noise on Sonoma when
+    /// their native image representations are passed through directly.
+    private func icon(for app: NSRunningApplication) -> NSImage? {
+        if let cached = iconsByPID[app.processIdentifier] { return cached }
+        guard let source = app.icon else { return nil }
+        let side = AppConstants.Launcher.RunningAppsStrip.iconSize
+        let pixels = Int(ceil(side * 2)) // Retina resolution, also downscales at 1x.
+        guard let bitmap = NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: pixels, pixelsHigh: pixels,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+            isPlanar: false, colorSpaceName: .deviceRGB,
+            bytesPerRow: 0, bitsPerPixel: 0
+        ), let context = NSGraphicsContext(bitmapImageRep: bitmap) else { return source }
+
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        source.draw(
+            in: NSRect(x: 0, y: 0, width: pixels, height: pixels),
+            from: .zero, operation: .copy, fraction: 1)
+        NSGraphicsContext.restoreGraphicsState()
+
+        guard let cgImage = bitmap.cgImage else { return source }
+        let image = NSImage(cgImage: cgImage, size: NSSize(width: side, height: side))
+        iconsByPID[app.processIdentifier] = image
+        return image
     }
 
     @discardableResult
