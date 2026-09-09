@@ -294,7 +294,7 @@ private struct ListItemRow: View {
         .opacity(isPending || isBusy ? Layout.pendingOpacity : 1)
         // Native pointer (macOS 15+) avoids the unbalanced NSCursor push/pop
         // stack that would leave a stuck cursor when a row is removed on reload.
-        .pointerStyle(isActionable ? .link : nil)
+        .pointingHandCursor(enabled: isActionable)
         .onHover { hovering = $0 }
     }
 }
