@@ -262,6 +262,11 @@ struct LauncherView: View {
     let shouldShowTestHint = LauncherView.cachedShouldShowTestHint
 
     static let cachedShouldShowTestHint: Bool = {
+        // Keep custom build identities without forcing a development badge.
+        // Evaluated once at launch; removing the preference restores detection.
+        if let override = UserDefaults.standard.object(forKey: "look.showTestHint") as? Bool {
+            return override
+        }
         let env = ProcessInfo.processInfo.environment
         if let value = env["LOOK_DEV_HINT"]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
             ["1", "true", "yes", "on"].contains(value)

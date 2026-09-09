@@ -56,3 +56,21 @@ When trying the UI, note that upstream defaults launch-at-login to enabled;
 disable it in settings if you only want a manual trial. First launch may request
 permissions for optional features. The CLI version check does not exercise those
 features or prove search performance.
+
+## Everyday use
+
+- Quit: activate Look, then press **Command+Option+Q**. Command+Q only hides it.
+- Reload configuration: **Command+Shift+;**.
+- Settings: **Command+Shift+,**.
+- Hide the development badge: run
+  `defaults write noah-code.Look.Sonoma look.showTestHint -bool false`, then
+  restart Look. Use `defaults delete noah-code.Look.Sonoma look.showTestHint`
+  to restore automatic detection.
+
+The SQLite database is at `~/Library/Application Support/look/look.db`.
+For structural inspection while the app runs, use
+`sqlite3 -readonly "$HOME/Library/Application Support/look/look.db"`, then
+`.tables` or `.schema`. Avoid dumping rows if you only want metadata: the
+database includes indexed paths, clipboard text, URLs, and usage history.
+It uses WAL mode, so copying just `look.db` while it is open may miss recent
+changes; use SQLite's backup command if you need a consistent snapshot.
