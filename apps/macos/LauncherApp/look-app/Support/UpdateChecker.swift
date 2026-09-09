@@ -49,6 +49,11 @@ final class UpdateChecker: ObservableObject {
     /// Pass `force: true` to bypass the throttle (e.g. a manual "Check now").
     @MainActor
     func checkForUpdates(force: Bool = false) {
+        // Personal compatibility builds must not offer incompatible upstream binaries.
+        guard Bundle.main.object(forInfoDictionaryKey: "LookDisableUpdates") as? Bool != true else {
+            if force { statusMessage = "Updates are managed by this build's distributor" }
+            return
+        }
         guard !isChecking else { return }
 
         if !force {

@@ -36,6 +36,7 @@ jobs:
       - name: Sign and package personal test build
         run: |
           app=.build/sonoma/Build/Products/Release/Look.app
+          /usr/libexec/PlistBuddy -c 'Add :LookDisableUpdates bool true' "$app/Contents/Info.plist"
           codesign --force --deep --sign - \
             --entitlements apps/macos/LauncherApp/look-app/Look.entitlements "$app"
           codesign --verify --deep --strict "$app"
