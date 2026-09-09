@@ -14,8 +14,9 @@ Rust toolchain requested by upstream's build phase. It builds both the Swift
 app and Rust library for macOS 14. No local compiler installation is required.
 
 The app is ad-hoc signed, not notarized. It uses the bundle identifier
-`noah-code.Look.Sonoma` and disables upstream update notifications. Configuration
-and database paths remain upstream's defaults, so this does not isolate app data.
+`noah-code.Look.Sonoma` and disables upstream update notifications. The separate identifier selects
+upstream's development settings file (`~/.look/config.dev`), but the database
+is still shared with other Look builds unless `LOOK_DB_PATH` is overridden.
 Do not run it alongside another Look build against the same database.
 
 ## Scope
@@ -34,3 +35,24 @@ have not been tested.
 Check cold launch, repeated hotkey open/hide, application and file search,
 opening results, clipboard history, settings, and quit/relaunch. Observe idle CPU
 and indexing activity with representative folders before calling support stable.
+
+## First build result (2026-09-09)
+
+[CI run 34360874429](https://github.com/hxseven/look/actions/runs/34360874429)
+built commit `c9d4d26` successfully on the first attempt:
+
+- 197 launcher logic tests passed.
+- Release build, ad-hoc signature verification, and packaging passed.
+- The downloaded executable's Mach-O minimum OS is 14.0 (built with SDK 26.2).
+- On macOS 14.8.4 / Apple Silicon, `Look --version` exited 0 and printed
+  `look 1.0 (1)` without stderr. A temporary config disabled launch-at-login,
+  and `LOOK_DB_PATH` pointed at a temporary location for this check.
+
+The full UI and performance smoke test is still pending. No Rust dependencies
+or Swift concurrency settings needed changes. The actual compatibility changes
+are isolated in commit `4e3ee30`; the other commits support this fork's builds.
+
+When trying the UI, note that upstream defaults launch-at-login to enabled;
+disable it in settings if you only want a manual trial. First launch may request
+permissions for optional features. The CLI version check does not exercise those
+features or prove search performance.
