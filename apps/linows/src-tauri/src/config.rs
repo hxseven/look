@@ -156,7 +156,33 @@ fn default_config_contents() -> String {
          ui_theme=\n",
     );
 
+    out.push_str(
+        "\n# Self-update: 0 = disabled, 1 = enabled (default).\n\
+         # Currently implemented on Windows only; macOS/Linux support is pending.\n\
+         auto_update_enable=0\n",
+    );
+
     out
+}
+
+/// Shared preference for all platforms. Read on each request so edits also
+/// apply before starting an update; platform support is handled by the caller.
+#[tauri::command]
+pub fn auto_update_enabled() -> bool {
+    let contents = std::fs::read_to_string(config_file_path()).unwrap_or_default();
+    parse_auto_update_enabled(&contents)
+}
+
+fn parse_auto_update_enabled(contents: &str) -> bool {
+    let value = contents
+        .lines()
+        .filter_map(|line| {
+            let (key, value) = strip_inline_comment(line).trim().split_once('=')?;
+            (key.trim() == "auto_update_enable").then_some(value.trim())
+        })
+        .next_back();
+    // Missing or invalid values preserve the existing enabled behavior.
+    value != Some("0")
 }
 
 /// Re-exported, not repeated: a second name is a second file.
@@ -281,6 +307,29 @@ pub fn config_file_path() -> std::path::PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn auto_update_config_honors_numeric_switch_and_comments() {
+        assert!(!parse_auto_update_enabled(
+            " auto_update_enable = 0 # disabled\n"
+        ));
+        assert!(parse_auto_update_enabled("auto_update_enable=1\n"));
+        for contents in [
+            "",
+            "# auto_update_enable=0",
+            "other_auto_update_enable=0",
+            "auto_update_enable=2",
+            "auto_update_enable=false",
+        ] {
+            assert!(parse_auto_update_enabled(contents), "{contents:?}");
+        }
+        assert!(!parse_auto_update_enabled(
+            "auto_update_enable=1\nauto_update_enable=0"
+        ));
+        assert!(parse_auto_update_enabled(
+            "auto_update_enable=0\nauto_update_enable=1"
+        ));
+    }
 
     #[test]
     fn missing_key_falls_back_to_default() {
