@@ -1,0 +1,56 @@
+name: Sonoma compatibility build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sonoma-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+      MACOSX_DEPLOYMENT_TARGET: '14.0'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Rust toolchain used by the Xcode build phase
+        run: rustup toolchain install nightly --profile minimal
+      - name: Test launcher logic
+        run: swift test --package-path apps/macos/LauncherApp
+      - name: Build for Sonoma
+        run: |
+          set -o pipefail
+          xcodebuild -project apps/macos/LauncherApp/look-app.xcodeproj \
+            -scheme Look -configuration Release -derivedDataPath .build/sonoma \
+            MACOSX_DEPLOYMENT_TARGET=14.0 ARCHS=arm64 \
+            CODE_SIGNING_ALLOWED=NO \
+            PRODUCT_BUNDLE_IDENTIFIER=noah-code.Look.Sonoma \
+            INFOPLIST_KEY_CFBundleDisplayName='Look Sonoma' \
+            build 2>&1 | tee build.log
+      - name: Sign and package personal test build
+        run: |
+          app=.build/sonoma/Build/Products/Release/Look.app
+          codesign --force --deep --sign - \
+            --entitlements apps/macos/LauncherApp/look-app/Look.entitlements "$app"
+          codesign --verify --deep --strict "$app"
+          /usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$app/Contents/Info.plist"
+          xcrun vtool -show-build "$app/Contents/MacOS/Look"
+          "$app/Contents/MacOS/Look" --version
+          ditto -c -k --sequesterRsrc --keepParent "$app" Look-Sonoma-arm64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Look-Sonoma-arm64
+          path: Look-Sonoma-arm64.zip
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: sonoma-build-log
+          path: build.log
+          retention-days: 7
